@@ -19,3 +19,8 @@ outputs/
 
 outputs
 cache
+
+# local Isaac Gym Preview 4 + Python env (see docs/install.md)
+/.venv/
+isaac4.tar.gz
+/isaacgym/

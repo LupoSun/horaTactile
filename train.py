@@ -19,9 +19,11 @@ from termcolor import cprint
 from omegaconf import DictConfig, OmegaConf
 from hydra.utils import to_absolute_path
 
+# Tasks must import before PPO/ProprioAdapt: those modules import torch, and Isaac Gym
+# requires torch to load after isaacgym (gymtorch extension).
+from hora.tasks import isaacgym_task_map
 from hora.algo.ppo.ppo import PPO
 from hora.algo.padapt.padapt import ProprioAdapt
-from hora.tasks import isaacgym_task_map
 from hora.utils.reformat import omegaconf_to_dict, print_dict
 from hora.utils.misc import set_np_formatting, set_seed, git_hash, git_diff_config
 

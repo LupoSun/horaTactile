@@ -5,10 +5,10 @@
 # Licensed under The MIT License [see LICENSE for details]
 # --------------------------------------------------------
 
-import torch
 import numpy as np
 from isaacgym import gymtorch
 from isaacgym.torch_utils import torch_rand_float, quat_from_angle_axis, quat_mul, tensor_clamp, to_torch
+import torch
 from hora.tasks.allegro_hand_hora import AllegroHandHora
 
 

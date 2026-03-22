@@ -6,11 +6,12 @@
 # --------------------------------------------------------
 
 import os
-import torch
 import numpy as np
+# Isaac Gym: import gymtorch/gymapi before torch (gymdeps checks sys.modules).
 from isaacgym import gymtorch
 from isaacgym import gymapi
 from isaacgym.torch_utils import to_torch, unscale, quat_apply, tensor_clamp, torch_rand_float, quat_conjugate, quat_mul
+import torch
 from glob import glob
 from hora.utils.misc import tprint
 from .base.vec_task import VecTask
