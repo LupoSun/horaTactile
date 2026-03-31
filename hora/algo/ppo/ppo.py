@@ -20,7 +20,8 @@ from hora.algo.models.running_mean_std import RunningMeanStd
 
 from hora.utils.misc import AverageScalarMeter
 
-from tensorboardX import SummaryWriter
+import wandb
+from omegaconf import OmegaConf
 
 
 class PPO(object):
@@ -59,9 +60,7 @@ class PPO(object):
         # allows us to specify a folder where all experiments will reside
         self.output_dir = output_dif
         self.nn_dir = os.path.join(self.output_dir, 'stage1_nn')
-        self.tb_dif = os.path.join(self.output_dir, 'stage1_tb')
         os.makedirs(self.nn_dir, exist_ok=True)
-        os.makedirs(self.tb_dif, exist_ok=True)
         # ---- Optim ----
         self.last_lr = float(self.ppo_config['learning_rate'])
         self.weight_decay = self.ppo_config.get('weight_decay', 0.0)
@@ -92,10 +91,14 @@ class PPO(object):
         # ---- Snapshot
         self.save_freq = self.ppo_config['save_frequency']
         self.save_best_after = self.ppo_config['save_best_after']
-        # ---- Tensorboard Logger ----
+        # ---- Wandb Logger ----
         self.extra_info = {}
-        writer = SummaryWriter(self.tb_dif)
-        self.writer = writer
+        wandb.init(
+            project='hora',
+            name=self.ppo_config['output_name'],
+            group='stage1',
+            config=OmegaConf.to_container(full_config, resolve=True),
+        )
 
         self.episode_rewards = AverageScalarMeter(100)
         self.episode_lengths = AverageScalarMeter(100)
@@ -120,20 +123,20 @@ class PPO(object):
         self.all_time = 0
 
     def write_stats(self, a_losses, c_losses, b_losses, entropies, kls):
-        self.writer.add_scalar('performance/RLTrainFPS', self.agent_steps / self.rl_train_time, self.agent_steps)
-        self.writer.add_scalar('performance/EnvStepFPS', self.agent_steps / self.data_collect_time, self.agent_steps)
-
-        self.writer.add_scalar('losses/actor_loss', torch.mean(torch.stack(a_losses)).item(), self.agent_steps)
-        self.writer.add_scalar('losses/bounds_loss', torch.mean(torch.stack(b_losses)).item(), self.agent_steps)
-        self.writer.add_scalar('losses/critic_loss', torch.mean(torch.stack(c_losses)).item(), self.agent_steps)
-        self.writer.add_scalar('losses/entropy', torch.mean(torch.stack(entropies)).item(), self.agent_steps)
-
-        self.writer.add_scalar('info/last_lr', self.last_lr, self.agent_steps)
-        self.writer.add_scalar('info/e_clip', self.e_clip, self.agent_steps)
-        self.writer.add_scalar('info/kl', torch.mean(torch.stack(kls)).item(), self.agent_steps)
-
+        stats = {
+            'performance/RLTrainFPS': self.agent_steps / self.rl_train_time,
+            'performance/EnvStepFPS': self.agent_steps / self.data_collect_time,
+            'losses/actor_loss': torch.mean(torch.stack(a_losses)).item(),
+            'losses/bounds_loss': torch.mean(torch.stack(b_losses)).item(),
+            'losses/critic_loss': torch.mean(torch.stack(c_losses)).item(),
+            'losses/entropy': torch.mean(torch.stack(entropies)).item(),
+            'info/last_lr': self.last_lr,
+            'info/e_clip': self.e_clip,
+            'info/kl': torch.mean(torch.stack(kls)).item(),
+        }
         for k, v in self.extra_info.items():
-            self.writer.add_scalar(f'{k}', v, self.agent_steps)
+            stats[k] = v
+        wandb.log(stats, step=self.agent_steps)
 
     def set_eval(self):
         self.model.eval()
@@ -184,8 +187,10 @@ class PPO(object):
 
             mean_rewards = self.episode_rewards.get_mean()
             mean_lengths = self.episode_lengths.get_mean()
-            self.writer.add_scalar('episode_rewards/step', mean_rewards, self.agent_steps)
-            self.writer.add_scalar('episode_lengths/step', mean_lengths, self.agent_steps)
+            wandb.log({
+                'episode_rewards/step': mean_rewards,
+                'episode_lengths/step': mean_lengths,
+            }, step=self.agent_steps)
             checkpoint_name = f'ep_{self.epoch_num}_step_{int(self.agent_steps // 1e6):04}M_reward_{mean_rewards:.2f}'
 
             if self.save_freq > 0:
@@ -199,6 +204,7 @@ class PPO(object):
                 self.save(os.path.join(self.nn_dir, 'best'))
 
         print('max steps achieved')
+        wandb.finish()
 
     def save(self, name):
         weights = {
