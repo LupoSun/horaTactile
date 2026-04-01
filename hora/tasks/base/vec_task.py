@@ -21,6 +21,7 @@ import numpy as np
 from abc import ABC
 from gym import spaces
 from typing import Dict, Any, Tuple
+from hora.utils.graphics import resolve_graphics_device_id
 
 
 class Env(ABC):
@@ -53,9 +54,9 @@ class Env(ABC):
         self.headless = headless
 
         enable_camera_sensors = config.get('enableCameraSensors', False)
-        self.graphics_device_id = graphics_device_id
-        if not enable_camera_sensors and self.headless:
-            self.graphics_device_id = -1
+        self.graphics_device_id = resolve_graphics_device_id(
+            graphics_device_id, self.headless, enable_camera_sensors
+        )
 
         self.num_environments = config['env']['numEnvs']
         self.num_observations = config['env']['numObservations']

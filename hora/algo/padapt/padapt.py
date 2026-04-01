@@ -15,7 +15,7 @@ from hora.utils.misc import AverageScalarMeter, tprint
 from hora.algo.models.models import ActorCritic
 from hora.algo.models.running_mean_std import RunningMeanStd
 import wandb
-from omegaconf import OmegaConf
+from hora.utils.wandb_utils import init_wandb_run
 
 
 class ProprioAdapt(object):
@@ -56,12 +56,7 @@ class ProprioAdapt(object):
         self.output_dir = output_dir
         self.nn_dir = os.path.join(self.output_dir, 'stage2_nn')
         os.makedirs(self.nn_dir, exist_ok=True)
-        wandb.init(
-            project='hora',
-            name=self.ppo_config['output_name'],
-            group='stage2',
-            config=OmegaConf.to_container(full_config, resolve=True),
-        )
+        init_wandb_run(full_config, name=self.ppo_config['output_name'], group='stage2')
         self.direct_info = {}
         # ---- Misc ----
         self.batch_size = self.num_actors
@@ -69,6 +64,7 @@ class ProprioAdapt(object):
         self.mean_eps_length = AverageScalarMeter(window_size=20000)
         self.best_rewards = -10000
         self.agent_steps = 0
+        self.max_agent_steps = self.ppo_config['max_agent_steps']
         # ---- Optim ----
         adapt_params = []
         for name, p in self.model.named_parameters():
@@ -108,7 +104,7 @@ class ProprioAdapt(object):
 
         obs_dict = self.env.reset()
         self.agent_steps += self.batch_size
-        while self.agent_steps <= 1e9:
+        while self.agent_steps < self.max_agent_steps:
             input_dict = {
                 'obs': self.running_mean_std(obs_dict['obs']).detach(),
                 'priv_info': obs_dict['priv_info'],

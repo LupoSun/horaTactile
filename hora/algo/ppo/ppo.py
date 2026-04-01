@@ -21,7 +21,7 @@ from hora.algo.models.running_mean_std import RunningMeanStd
 from hora.utils.misc import AverageScalarMeter
 
 import wandb
-from omegaconf import OmegaConf
+from hora.utils.wandb_utils import init_wandb_run
 
 
 class PPO(object):
@@ -93,12 +93,7 @@ class PPO(object):
         self.save_best_after = self.ppo_config['save_best_after']
         # ---- Wandb Logger ----
         self.extra_info = {}
-        wandb.init(
-            project='hora',
-            name=self.ppo_config['output_name'],
-            group='stage1',
-            config=OmegaConf.to_container(full_config, resolve=True),
-        )
+        init_wandb_run(full_config, name=self.ppo_config['output_name'], group='stage1')
 
         self.episode_rewards = AverageScalarMeter(100)
         self.episode_lengths = AverageScalarMeter(100)

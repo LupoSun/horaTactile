@@ -3,3 +3,6 @@ termcolor
 omegaconf
 gym
 wandb
+modal
+trimesh
+scipy

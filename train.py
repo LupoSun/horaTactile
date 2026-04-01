@@ -25,7 +25,8 @@ from hora.tasks import isaacgym_task_map
 from hora.algo.ppo.ppo import PPO
 from hora.algo.padapt.padapt import ProprioAdapt
 from hora.utils.reformat import omegaconf_to_dict, print_dict
-from hora.utils.misc import set_np_formatting, set_seed, git_hash, git_diff_config
+from hora.utils.checkpoint_utils import get_algo_best_checkpoint_relpath
+from hora.utils.misc import set_np_formatting, set_seed, write_run_metadata
 
 
 ## OmegaConf & Hydra Config
@@ -65,17 +66,10 @@ def main(config: DictConfig):
         agent.restore_test(config.train.load_path)
         agent.test()
     else:
-        date = str(datetime.datetime.now().strftime('%m%d%H'))
-        print(git_diff_config('./'))
-        os.system(f'git diff HEAD > {output_dif}/gitdiff.patch')
-        with open(os.path.join(output_dif, f'config_{date}_{git_hash()}.yaml'), 'w') as f:
-            f.write(OmegaConf.to_yaml(config))
+        write_run_metadata(output_dif, config)
 
         # check whether execute train by mistake:
-        best_ckpt_path = os.path.join(
-            'outputs', config.train.ppo.output_name,
-            'stage1_nn' if config.train.algo == 'PPO' else 'stage2_nn', 'best.pth'
-        )
+        best_ckpt_path = get_algo_best_checkpoint_relpath(config.train.ppo.output_name, config.train.algo)
         if os.path.exists(best_ckpt_path):
             user_input = input(
                 f'are you intentionally going to overwrite files in {config.train.ppo.output_name}, type yes to continue \n')

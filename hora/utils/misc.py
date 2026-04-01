@@ -11,11 +11,13 @@
 # --------------------------------------------------------
 
 import os
+import datetime
 import torch
 import shlex
 import random
 import subprocess
 import numpy as np
+from omegaconf import OmegaConf
 
 
 def tprint(*args):
@@ -32,7 +34,10 @@ def pprint(*args):
 
 def git_hash():
     cmd = 'git log -n 1 --pretty="%h"'
-    ret = subprocess.check_output(shlex.split(cmd)).strip()
+    try:
+        ret = subprocess.check_output(shlex.split(cmd), stderr=subprocess.STDOUT).strip()
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return 'nogit'
     if isinstance(ret, bytes):
         ret = ret.decode()
     return ret
@@ -40,10 +45,36 @@ def git_hash():
 
 def git_diff_config(name):
     cmd = f'git diff --unified=0 {name}'
-    ret = subprocess.check_output(shlex.split(cmd)).strip()
+    try:
+        ret = subprocess.check_output(shlex.split(cmd), stderr=subprocess.STDOUT).strip()
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return ''
     if isinstance(ret, bytes):
         ret = ret.decode()
     return ret
+
+
+def write_git_diff_patch(output_path, rev='HEAD'):
+    try:
+        diff = subprocess.check_output(
+            ['git', 'diff', rev],
+            stderr=subprocess.DEVNULL,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return False
+    with open(output_path, 'wb') as diff_file:
+        diff_file.write(diff)
+    return True
+
+
+def write_run_metadata(output_dir, config):
+    date = str(datetime.datetime.now().strftime('%m%d%H'))
+    git_diff = git_diff_config('./')
+    if git_diff:
+        print(git_diff)
+    write_git_diff_patch(os.path.join(output_dir, 'gitdiff.patch'))
+    with open(os.path.join(output_dir, f'config_{date}_{git_hash()}.yaml'), 'w') as config_file:
+        config_file.write(OmegaConf.to_yaml(config))
 
 
 def set_np_formatting():
