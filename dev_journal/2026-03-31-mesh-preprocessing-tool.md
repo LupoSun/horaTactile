@@ -14,6 +14,8 @@ The downstream integration work is **not** done yet, and this note now reflects 
 
 `tools/mesh/preprocess.py` — a new CLI pipeline added in this repo that converts Rhino-exported meshes into IsaacGym-ready assets plus point clouds for future geometry-aware training.
 
+`tools/mesh/scale_by_bbox.py` — a standalone helper added alongside it that uniformly scales arbitrary meshes to a target axis-aligned bounding-box size.
+
 This is not something HORA shipped with. It was added here specifically for the Rhino-object benchmark and fills a real gap in the original HORA codebase:
 - the existing repo only uses simple simulation assets such as cylinders and cuboids
 - there was no mesh ingestion pipeline for Rhino-modeled objects
@@ -108,12 +110,13 @@ Per mesh:
    - `coacd` if available
    - otherwise trimesh convex decomposition
    - otherwise convex hull fallback
-8. Compute inertia:
+8. Optionally scale the exported simulation mesh so a chosen bbox extent matches a target size
+9. Compute inertia:
    - exact from volume if watertight
    - bounding-box approximation otherwise
-9. Generate a URDF with repo-root-relative mesh paths
-10. Sample surface point clouds and save them as `.npy`
-11. Save metadata for downstream simulation/debugging
+10. Generate a URDF with mesh paths relative to the generated object folder
+11. Sample surface point clouds and save them as `.npy`
+12. Save metadata for downstream simulation/debugging
 
 ### Output conventions
 
@@ -126,19 +129,31 @@ That means:
 
 This is appropriate for future PointNet-style shape encoding, because the point clouds represent shape independent of world pose.
 
+The exported simulation meshes can now optionally use a different scale:
+- `visual.obj` / `collision.obj` can be uniformly scaled so a bbox extent matches a requested target size
+- the point clouds still remain in normalized unit-sphere space
+
+This split is intentional:
+- simulation assets often need a physical target size
+- shape encoders typically want normalized geometry
+
 ### Metadata currently saved
 
 The tool currently saves:
 - `canonical_scale_factor`
 - `centroid_offset`
 - original and normalized bounding boxes
+- export bounding box after optional scaling
+- export bbox scale factor / target size / target axis
 - volume when available
+- exported volume and exported surface area
 - surface area
 - face / vertex counts
 - watertightness flag
 - mass
 - inertia
 - point-cloud resolutions written
+- point-cloud coordinate convention
 - URDF filename
 
 ## CLI Usage
@@ -162,8 +177,21 @@ python tools/mesh/preprocess.py shape.obj --n-points 100 512 2048
 # Custom object mass
 python tools/mesh/preprocess.py shape.obj --mass 0.05
 
+# Uniformly scale exported meshes so the longest bbox edge is 8 cm
+python tools/mesh/preprocess.py shape.obj --target-bbox-size 0.08
+
+# Or match a specific axis
+python tools/mesh/preprocess.py shape.obj --target-bbox-size 0.05 --target-bbox-axis z
+
 # Verbose logs
 python tools/mesh/preprocess.py shape.obj --verbose
+```
+
+Standalone helper:
+
+```bash
+python tools/mesh/scale_by_bbox.py shape.obj --target-size 0.08
+python tools/mesh/scale_by_bbox.py shape.obj --target-size 0.05 --axis z
 ```
 
 ## Rhino Export Notes
@@ -181,11 +209,13 @@ The tool can handle non-watertight geometry, but inertia becomes approximate in 
 ### Implemented
 
 - mesh preprocessing CLI exists at `tools/mesh/preprocess.py`
+- standalone bbox-scaling helper exists at `tools/mesh/scale_by_bbox.py`
 - asset folders are generated under `assets/custom/{name}/`
 - URDF generation is automated
 - collision meshes are generated
 - point clouds are generated
 - metadata is generated
+- exported visual/collision meshes can be uniformly bbox-scaled without changing normalized point-cloud outputs
 
 ### Not implemented yet
 
@@ -278,9 +308,25 @@ Recommended optional dependency:
 
 `scipy` is useful in the broader geometry stack, but the preprocessing tool itself is fundamentally built around `trimesh` plus optional `coacd`.
 
+## Validation Notes
+
+The mesh tooling was validated locally after installing `trimesh` into the project venv.
+
+Test coverage now includes:
+- pure bbox scaling math
+- an end-to-end preprocess-path test on a synthetic mesh
+- verification that:
+  - exported meshes respect the requested bbox target size
+  - point clouds remain in unit-sphere space
+  - metadata records both normalization-space and export-space sizing
+
+While testing, two implementation fixes were needed:
+- Python 3.8 import compatibility in `tools/mesh/preprocess.py`
+- compatibility with the current `trimesh` face-cleaning API
+
 ## Notes
 
 - `coacd` is preferred for complex concave shapes and thin features
 - point clouds are sampled from the normalized mesh and are intended for shape encoding, not pose encoding
-- the tool writes repo-root-relative mesh paths into the URDF so they align with Isaac Gym asset loading conventions
+- the tool now writes mesh paths into the URDF relative to the generated object folder, which makes custom output directories portable
 - the generated folder layout is already suitable for a future `assets/custom/*/` glob-based object loader

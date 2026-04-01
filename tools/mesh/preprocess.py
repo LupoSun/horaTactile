@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 """
 Mesh preprocessing pipeline for horaTactile.
 
@@ -29,6 +31,10 @@ Usage:
 
     # Custom point counts
     python tools/mesh/preprocess.py shape.obj --n-points 100 512 2048
+
+    # Scale exported simulation meshes so the longest bbox edge is 8 cm
+    # (point clouds remain unit-sphere normalised)
+    python tools/mesh/preprocess.py shape.obj --target-bbox-size 0.08
 """
 
 import argparse
@@ -46,6 +52,11 @@ try:
 except ImportError:
     sys.exit("trimesh is required: pip install trimesh")
 
+try:
+    from tools.mesh.scale_by_bbox import scale_mesh_by_bbox
+except ImportError:
+    from scale_by_bbox import scale_mesh_by_bbox
+
 logger = logging.getLogger(__name__)
 
 # Repo root (two levels up from tools/mesh/)
@@ -55,6 +66,27 @@ DEFAULT_OUTPUT_DIR = REPO_ROOT / "assets" / "custom"
 # Default inertial values matching existing HORA URDFs
 DEFAULT_MASS = 0.05
 DEFAULT_INERTIA = 0.0001
+
+
+def _remove_duplicate_faces(mesh: trimesh.Trimesh) -> None:
+    if hasattr(mesh, "remove_duplicate_faces"):
+        mesh.remove_duplicate_faces()
+        return
+    if hasattr(mesh, "unique_faces"):
+        mesh.update_faces(mesh.unique_faces())
+
+
+def _remove_degenerate_faces(mesh: trimesh.Trimesh) -> None:
+    if hasattr(mesh, "remove_degenerate_faces"):
+        mesh.remove_degenerate_faces()
+        return
+    if hasattr(mesh, "nondegenerate_faces"):
+        mesh.update_faces(mesh.nondegenerate_faces())
+
+
+def _cleanup_face_updates(mesh: trimesh.Trimesh) -> None:
+    if hasattr(mesh, "remove_unreferenced_vertices"):
+        mesh.remove_unreferenced_vertices()
 
 
 # ---------------------------------------------------------------------------
@@ -77,8 +109,9 @@ def load_and_clean(mesh_path: Path) -> trimesh.Trimesh:
             raise TypeError(f"Unexpected type from trimesh.load: {type(mesh)}")
 
     # Fix common mesh issues
-    mesh.remove_duplicate_faces()
-    mesh.remove_degenerate_faces()
+    _remove_duplicate_faces(mesh)
+    _remove_degenerate_faces(mesh)
+    _cleanup_face_updates(mesh)
     trimesh.repair.fix_normals(mesh)
     trimesh.repair.fix_winding(mesh)
     trimesh.repair.fill_holes(mesh)
@@ -112,6 +145,31 @@ def normalise_to_unit_sphere(mesh: trimesh.Trimesh) -> tuple[trimesh.Trimesh, fl
     mesh.vertices /= radius
 
     return mesh, radius, centroid
+
+
+def prepare_export_mesh(
+    normalised_mesh: trimesh.Trimesh,
+    target_bbox_size: float | None = None,
+    target_bbox_axis: str = "max",
+) -> tuple[trimesh.Trimesh, float, np.ndarray]:
+    """
+    Prepare the mesh used for exported visual/collision assets.
+
+    Point clouds remain in unit-sphere space for geometry encoding. Exported meshes can
+    optionally be scaled uniformly so a chosen bbox dimension matches a target size.
+    """
+    export_mesh = normalised_mesh.copy()
+    export_bbox = np.asarray(export_mesh.bounding_box.extents, dtype=np.float64)
+    export_scale_factor = 1.0
+
+    if target_bbox_size is not None:
+        export_mesh, export_scale_factor, _, export_bbox = scale_mesh_by_bbox(
+            export_mesh,
+            target_size=target_bbox_size,
+            axis=target_bbox_axis,
+        )
+
+    return export_mesh, float(export_scale_factor), np.asarray(export_bbox, dtype=np.float64)
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +293,7 @@ def generate_urdf(
     """
     Generate a URDF string matching the HORA asset convention.
 
-    Mesh paths should be relative to the repo root (IsaacGym asset_root).
+    Mesh paths should be relative to the generated URDF location.
     """
     if inertia is None:
         inertia = {k: DEFAULT_INERTIA if k in ("ixx", "iyy", "izz") else 0.0
@@ -278,6 +336,8 @@ def process_mesh(
     point_counts: list[int],
     skip_decomposition: bool = False,
     mass: float = DEFAULT_MASS,
+    target_bbox_size: float | None = None,
+    target_bbox_axis: str = "max",
 ) -> Path:
     """
     Full processing pipeline for a single mesh.
@@ -300,11 +360,27 @@ def process_mesh(
     # 2. Normalise to unit sphere
     logger.info("  Normalising to unit bounding sphere...")
     mesh, scale_factor, centroid = normalise_to_unit_sphere(mesh)
+    normalised_bbox = np.asarray(mesh.bounding_box.extents, dtype=np.float64)
+
+    # 2b. Optionally scale exported meshes to a target bbox size. Point clouds stay
+    # in the normalised coordinate frame above.
+    export_mesh, export_bbox_scale_factor, export_bbox = prepare_export_mesh(
+        mesh,
+        target_bbox_size=target_bbox_size,
+        target_bbox_axis=target_bbox_axis,
+    )
+    if target_bbox_size is not None:
+        logger.info(
+            "  Scaling exported mesh by bbox: axis=%s target=%.6f scale_factor=%.6f",
+            target_bbox_axis,
+            target_bbox_size,
+            export_bbox_scale_factor,
+        )
 
     # 3. Export visual mesh
     visual_path = obj_dir / "visual.obj"
-    mesh.export(str(visual_path))
-    logger.info(f"  Visual mesh: {visual_path.name} ({len(mesh.faces)} faces)")
+    export_mesh.export(str(visual_path))
+    logger.info(f"  Visual mesh: {visual_path.name} ({len(export_mesh.faces)} faces)")
 
     # 4. Convex decomposition for collision
     if skip_decomposition:
@@ -312,17 +388,18 @@ def process_mesh(
         logger.info("  Skipping decomposition, using visual mesh for collision")
     else:
         logger.info("  Running convex decomposition...")
-        collision_mesh = convex_decompose(mesh)
+        collision_mesh = convex_decompose(export_mesh)
         collision_path = obj_dir / "collision.obj"
         collision_mesh.export(str(collision_path))
 
     # 5. Compute inertia
-    inertia = compute_inertia(mesh, mass)
+    inertia = compute_inertia(export_mesh, mass)
 
     # 6. Generate URDF
-    # Paths in URDF must be relative to repo root (IsaacGym asset_root)
-    visual_rel = str(visual_path.relative_to(REPO_ROOT))
-    collision_rel = str(collision_path.relative_to(REPO_ROOT))
+    # Paths in the URDF are kept relative to the object directory so the
+    # generated asset bundle remains portable even outside the repo root.
+    visual_rel = visual_path.name
+    collision_rel = collision_path.name
 
     urdf_content = generate_urdf(
         name=name,
@@ -350,15 +427,22 @@ def process_mesh(
         "canonical_scale_factor": float(scale_factor),
         "centroid_offset": centroid.tolist(),
         "original_bbox": original_bounds,
-        "normalised_bbox": mesh.bounding_box.extents.tolist(),
+        "normalised_bbox": normalised_bbox.tolist(),
+        "export_bbox": export_bbox.tolist(),
+        "export_bbox_scale_factor": float(export_bbox_scale_factor),
+        "export_bbox_target_size": float(target_bbox_size) if target_bbox_size is not None else None,
+        "export_bbox_target_axis": target_bbox_axis if target_bbox_size is not None else None,
         "volume_m3": original_volume,
         "surface_area_m2": original_area,
-        "n_faces": len(mesh.faces),
-        "n_vertices": len(mesh.vertices),
-        "is_watertight": mesh.is_watertight,
+        "export_volume_m3": float(export_mesh.volume) if export_mesh.is_watertight else None,
+        "export_surface_area_m2": float(export_mesh.area),
+        "n_faces": len(export_mesh.faces),
+        "n_vertices": len(export_mesh.vertices),
+        "is_watertight": export_mesh.is_watertight,
         "mass_kg": mass,
         "inertia": inertia,
         "point_cloud_counts": sorted(clouds.keys()),
+        "point_cloud_space": "unit_sphere",
         "urdf_file": f"{name}.urdf",
     }
     meta_path = obj_dir / "metadata.json"
@@ -410,6 +494,17 @@ def main():
         help=f"Object mass in kg (default: {DEFAULT_MASS})",
     )
     parser.add_argument(
+        "--target-bbox-size",
+        type=float,
+        help="Uniformly scale exported meshes so the selected bbox extent matches this size",
+    )
+    parser.add_argument(
+        "--target-bbox-axis",
+        choices=("max", "x", "y", "z"),
+        default="max",
+        help="Which bbox extent to match when --target-bbox-size is provided (default: max)",
+    )
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Verbose output",
@@ -436,6 +531,8 @@ def main():
                 point_counts=args.n_points,
                 skip_decomposition=args.skip_decomposition,
                 mass=args.mass,
+                target_bbox_size=args.target_bbox_size,
+                target_bbox_axis=args.target_bbox_axis,
             )
             results.append(obj_dir)
         except Exception as e:
@@ -443,14 +540,20 @@ def main():
             errors.append(mesh_path)
 
     # Summary
+    def _display_path(path: Path) -> str:
+        try:
+            return str(path.relative_to(REPO_ROOT))
+        except ValueError:
+            return str(path)
+
     print(f"\n{'=' * 50}")
     print(f"Processed: {len(results)} / {len(args.meshes)} meshes")
     for d in results:
-        print(f"  {d.relative_to(REPO_ROOT)}/")
+        print(f"  {_display_path(d)}/")
     if errors:
         print(f"Errors ({len(errors)}):")
         for e in errors:
-            print(f"  {e}")
+            print(f"  {_display_path(e)}")
 
     sys.exit(1 if errors else 0)
 
