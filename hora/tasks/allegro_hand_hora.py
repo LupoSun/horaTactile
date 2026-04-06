@@ -79,7 +79,7 @@ class AllegroHandHora(VecTask):
 
         if self.use_tactile:
             body_dict = self.gym.get_asset_rigid_body_dict(self.hand_asset)
-            tip_names = ['link_3.0_tip', 'link_7.0_tip', 'link_11.0_tip', 'link_15.0_tip']
+            tip_names = ['link_3.0', 'link_7.0', 'link_11.0', 'link_15.0']
             self.fingertip_indices = to_torch(
                 [body_dict[name] for name in tip_names], dtype=torch.long, device=self.device
             )

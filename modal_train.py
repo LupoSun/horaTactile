@@ -57,7 +57,6 @@ def _resolve_task_config_path() -> Path:
 TASK_CONFIG_PATH = _resolve_task_config_path()
 IGNORED_PROJECT_PARTS = {
     "outputs",
-    "cache",
     "__pycache__",
     ".git",
     ".venv",
@@ -104,6 +103,10 @@ def _build_modal_image():
         )
     )
 
+    netrc = Path("~/.netrc").expanduser()
+    if netrc.is_file():
+        image_obj = image_obj.add_local_file(netrc, remote_path="/root/.netrc", copy=True)
+
     if hasattr(image_obj, "add_local_dir"):
         image_obj = image_obj.add_local_dir(
             ".",
@@ -131,6 +134,7 @@ env = {
     "PYTHONPATH": PROJECT_DIR,
     "PYTHONUNBUFFERED": "1",
     "WANDB_DIR": f"{VOLUME_PATH}/wandb",
+    "WANDB_MODE": "online",
 }
 
 if hasattr(image, "env"):
