@@ -29,6 +29,7 @@ class AllegroHandHora(VecTask):
         self._setup_object_info(config['env']['object'])
         # 4. setup reward
         self._setup_reward_config(config['env']['reward'])
+        self.use_tactile = config['env']['hora'].get('useTactile', False)
         self.base_obj_scale = config['env']['baseObjScale']
         self.save_init_pose = config['env']['genGrasps']
         self.aggregate_mode = self.config['env']['aggregateMode']
@@ -75,6 +76,13 @@ class AllegroHandHora(VecTask):
         self.root_state_tensor = gymtorch.wrap_tensor(actor_root_state_tensor).view(-1, 13)
 
         self._refresh_gym()
+
+        if self.use_tactile:
+            body_dict = self.gym.get_asset_rigid_body_dict(self.hand_asset)
+            tip_names = ['link_3.0_tip', 'link_7.0_tip', 'link_11.0_tip', 'link_15.0_tip']
+            self.fingertip_indices = to_torch(
+                [body_dict[name] for name in tip_names], dtype=torch.long, device=self.device
+            )
 
         self.num_dofs = self.gym.get_sim_dof_count(self.sim) // self.num_envs
 
@@ -290,6 +298,8 @@ class AllegroHandHora(VecTask):
         self.rb_forces[env_ids] = 0
         self.priv_info_buf[env_ids, 0:3] = 0
         self.proprio_hist_buf[env_ids] = 0
+        if self.use_tactile:
+            self.tactile_hist_buf[env_ids] = 0
         self.at_reset_buf[env_ids] = 1
 
     def compute_observations(self):
@@ -316,7 +326,15 @@ class AllegroHandHora(VecTask):
         self.obs_buf[:, :t_buf.shape[1]] = t_buf
         self.at_reset_buf[at_reset_env_ids] = 0
 
-        self.proprio_hist_buf[:] = self.obs_buf_lag_history[:, -self.prop_hist_len:].clone()
+        if self.use_tactile:
+            self.tactile_hist_buf[:, :-1] = self.tactile_hist_buf[:, 1:].clone()
+            cur_forces = self.contact_forces[:, self.fingertip_indices, :].reshape(self.num_envs, -1)
+            self.tactile_hist_buf[:, -1] = torch.clamp(cur_forces / 10.0, -1.0, 1.0)
+            self.tactile_hist_buf[at_reset_env_ids] = 0
+            self.proprio_hist_buf[:, :, :32] = self.obs_buf_lag_history[:, -self.prop_hist_len:].clone()
+            self.proprio_hist_buf[:, :, 32:] = self.tactile_hist_buf
+        else:
+            self.proprio_hist_buf[:] = self.obs_buf_lag_history[:, -self.prop_hist_len:].clone()
         self._update_priv_buf(env_id=range(self.num_envs), name='obj_position', value=self.object_pos.clone())
 
     def compute_reward(self, actions):
@@ -551,7 +569,10 @@ class AllegroHandHora(VecTask):
         self.prop_hist_len = self.config['env']['hora']['propHistoryLen']
         self.num_env_factors = self.config['env']['hora']['privInfoDim']
         self.priv_info_buf = torch.zeros((num_envs, self.num_env_factors), device=self.device, dtype=torch.float)
-        self.proprio_hist_buf = torch.zeros((num_envs, self.prop_hist_len, 32), device=self.device, dtype=torch.float)
+        self.hist_obs_dim = 44 if self.use_tactile else 32  # 32 proprio + 12 tactile (when enabled)
+        self.proprio_hist_buf = torch.zeros((num_envs, self.prop_hist_len, self.hist_obs_dim), device=self.device, dtype=torch.float)
+        if self.use_tactile:
+            self.tactile_hist_buf = torch.zeros((num_envs, self.prop_hist_len, 12), device=self.device, dtype=torch.float)
 
     def _setup_reward_config(self, r_config):
         self.angvel_clip_min = r_config['angvelClipMin']
