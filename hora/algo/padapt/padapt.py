@@ -14,7 +14,8 @@ from termcolor import cprint
 from hora.utils.misc import AverageScalarMeter, tprint
 from hora.algo.models.models import ActorCritic
 from hora.algo.models.running_mean_std import RunningMeanStd
-from tensorboardX import SummaryWriter
+import wandb
+from hora.utils.wandb_utils import init_wandb_run
 
 
 class ProprioAdapt(object):
@@ -54,11 +55,8 @@ class ProprioAdapt(object):
         # ---- Output Dir ----
         self.output_dir = output_dir
         self.nn_dir = os.path.join(self.output_dir, 'stage2_nn')
-        self.tb_dir = os.path.join(self.output_dir, 'stage2_tb')
         os.makedirs(self.nn_dir, exist_ok=True)
-        os.makedirs(self.tb_dir, exist_ok=True)
-        writer = SummaryWriter(self.tb_dir)
-        self.writer = writer
+        init_wandb_run(full_config, name=self.ppo_config['output_name'], group='stage2')
         self.direct_info = {}
         # ---- Misc ----
         self.batch_size = self.num_actors
@@ -66,6 +64,7 @@ class ProprioAdapt(object):
         self.mean_eps_length = AverageScalarMeter(window_size=20000)
         self.best_rewards = -10000
         self.agent_steps = 0
+        self.max_agent_steps = self.ppo_config['max_agent_steps']
         # ---- Optim ----
         adapt_params = []
         for name, p in self.model.named_parameters():
@@ -105,7 +104,7 @@ class ProprioAdapt(object):
 
         obs_dict = self.env.reset()
         self.agent_steps += self.batch_size
-        while self.agent_steps <= 1e9:
+        while self.agent_steps < self.max_agent_steps:
             input_dict = {
                 'obs': self.running_mean_std(obs_dict['obs']).detach(),
                 'priv_info': obs_dict['priv_info'],
@@ -133,7 +132,7 @@ class ProprioAdapt(object):
             self.step_reward = self.step_reward * not_dones
             self.step_length = self.step_length * not_dones
 
-            self.log_tensorboard()
+            self.log_wandb()
 
             if self.agent_steps % 1e8 == 0:
                 self.save(os.path.join(self.nn_dir, f'{self.agent_steps // 1e8}00m'))
@@ -152,11 +151,16 @@ class ProprioAdapt(object):
                           f'Current Best: {self.best_rewards:.2f}'
             tprint(info_string)
 
-    def log_tensorboard(self):
-        self.writer.add_scalar('episode_rewards/step', self.mean_eps_reward.get_mean(), self.agent_steps)
-        self.writer.add_scalar('episode_lengths/step', self.mean_eps_length.get_mean(), self.agent_steps)
+        wandb.finish()
+
+    def log_wandb(self):
+        stats = {
+            'episode_rewards/step': self.mean_eps_reward.get_mean(),
+            'episode_lengths/step': self.mean_eps_length.get_mean(),
+        }
         for k, v in self.direct_info.items():
-            self.writer.add_scalar(f'{k}/frame', v, self.agent_steps)
+            stats[f'{k}/frame'] = v
+        wandb.log(stats, step=self.agent_steps)
 
     def restore_train(self, fn):
         checkpoint = torch.load(fn)
