@@ -56,13 +56,14 @@ def _resolve_task_config_path() -> Path:
 
 TASK_CONFIG_PATH = _resolve_task_config_path()
 IGNORED_PROJECT_PARTS = {
-    "outputs",
     "__pycache__",
     ".git",
     ".venv",
     ".pytest_cache",
     ".codex",
     "isaacgym",
+    "outputs",
+    "cache",
 }
 
 
@@ -188,11 +189,17 @@ def get_stage_best_checkpoint_volume_path(run_name: str, stage: int, volume_path
 
 def setup_project_symlinks(project_dir: str = PROJECT_DIR, volume_path: str = VOLUME_PATH):
     """Link outputs/ and cache/ inside the project dir to the persistent volume."""
+    import shutil
     for name in ("outputs", "cache"):
         vol_dir = os.path.join(volume_path, name)
         proj_link = os.path.join(project_dir, name)
         os.makedirs(vol_dir, exist_ok=True)
-        if not os.path.exists(proj_link):
+        if os.path.islink(proj_link):
+            pass  # already a symlink, nothing to do
+        elif os.path.isdir(proj_link):
+            shutil.rmtree(proj_link)
+            os.symlink(vol_dir, proj_link)
+        elif not os.path.exists(proj_link):
             os.symlink(vol_dir, proj_link)
 
 
