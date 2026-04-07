@@ -36,7 +36,7 @@ env:
   hora:
     propHistoryLen: 30
     privInfoDim: 9
-    useTactile: false
+    useTactile: True
 
   reward:
     angvelClipMin: -0.5
