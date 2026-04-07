@@ -12,16 +12,21 @@ Usage:
     modal run modal_train.py --run-name my_exp --stage 1
     modal run modal_train.py --run-name my_exp --stage 2
 
+    # Select an explicit runtime profile
+    modal run modal_train.py --run-name my_exp --runtime-profile a100_probe --stage 1
+    modal run modal_train.py --run-name my_exp --runtime-profile a100_compat --stage 1
+
     # Pass extra Hydra overrides
     modal run modal_train.py --run-name my_exp --overrides "task.env.numEnvs=4096 train.ppo.max_agent_steps=1024"
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+import inspect
 import os
 import shlex
 import subprocess
-import inspect
 from pathlib import Path
 
 import modal
@@ -33,8 +38,26 @@ APP_NAME = "hora-train"
 PROJECT_DIR = "/root/project"
 VOLUME_PATH = "/vol"
 CONDA_PYTHON = "/usr/bin/python3"
-DEFAULT_GPU = os.environ.get("MODAL_GPU", "A100")
+T4_STABLE_PROFILE = "t4_stable"
+A100_PROBE_PROFILE = "a100_probe"
+A100_COMPAT_PROFILE = "a100_compat"
+RUNTIME_PROFILE_CHOICES = (T4_STABLE_PROFILE, A100_PROBE_PROFILE, A100_COMPAT_PROFILE)
+DEFAULT_RUNTIME_PROFILE = os.environ.get("MODAL_RUNTIME_PROFILE", T4_STABLE_PROFILE)
 DEFAULT_BASE_IMAGE = os.environ.get("MODAL_BASE_IMAGE", "nvidia/cuda:11.8.0-cudnn8-devel-ubuntu20.04")
+DEFAULT_COMPAT_BASE_IMAGE = os.environ.get("MODAL_COMPAT_BASE_IMAGE", "nvidia/cuda:11.7.1-cudnn8-devel-ubuntu20.04")
+T4_GPU = os.environ.get("MODAL_T4_GPU", "T4")
+A100_PROBE_GPU = os.environ.get("MODAL_A100_GPU", "A100-40GB")
+A100_COMPAT_GPU = os.environ.get("MODAL_A100_COMPAT_GPU", A100_PROBE_GPU)
+DEFAULT_TORCH_INSTALL = os.environ.get(
+    "MODAL_TORCH_INSTALL",
+    "torch==2.1.2+cu118 torchvision==0.16.2+cu118 torchaudio==2.1.2+cu118 "
+    "--extra-index-url https://download.pytorch.org/whl/cu118",
+)
+COMPAT_TORCH_INSTALL = os.environ.get(
+    "MODAL_COMPAT_TORCH_INSTALL",
+    "torch==1.13.1+cu117 torchvision==0.14.1+cu117 torchaudio==0.13.1+cu117 "
+    "--extra-index-url https://download.pytorch.org/whl/cu117",
+)
 DEFAULT_TIMEOUT_SECONDS = 60 * 60 * 24  # 24 hours
 VOLUME_COMMIT_INTERVAL_SECONDS = 300
 DEFAULT_TASK_NAME = "AllegroHandHora"
@@ -76,13 +99,23 @@ def _should_copy_project_path(local_path: str) -> bool:
 
 volume = modal.Volume.from_name("hora-volume", create_if_missing=True)
 
+
+@dataclass(frozen=True)
+class RuntimeProfile:
+    name: str
+    gpu: str
+    image: modal.Image
+    description: str
+    function_env: dict[str, str]
+
+
 # ---------------------------------------------------------------------------
 # Image
 # ---------------------------------------------------------------------------
 
-def _build_modal_image():
+def _build_modal_image(base_image: str, torch_install: str):
     image_obj = (
-        modal.Image.from_registry(DEFAULT_BASE_IMAGE, add_python="3.11")
+        modal.Image.from_registry(base_image, add_python="3.11")
         .pip_install("omegaconf")
         .apt_install("git", "wget", "unzip", "python3", "python3-pip", "python3-dev")
         .run_commands(
@@ -90,9 +123,7 @@ def _build_modal_image():
             # training environment on Ubuntu 20.04's system interpreter while
             # Modal itself runs on its supported standalone Python.
             "/usr/bin/python3 -m pip install --upgrade pip",
-            "/usr/bin/python3 -m pip install "
-            "torch==2.1.2+cu118 torchvision==0.16.2+cu118 torchaudio==2.1.2+cu118 "
-            "--extra-index-url https://download.pytorch.org/whl/cu118",
+            f"/usr/bin/python3 -m pip install {torch_install}",
             "/usr/bin/python3 -m pip install gdown",
             # IsaacGym Preview 4.0 from NVIDIA's Google Drive
             f"/usr/bin/python3 -m gdown {ISAACGYM_FILE_ID} -O /tmp/isaac4.tar.gz",
@@ -118,8 +149,6 @@ def _build_modal_image():
     return image_obj
 
 
-image = _build_modal_image()
-
 app = modal.App(APP_NAME)
 
 # Forward WANDB_API_KEY if set locally.
@@ -133,18 +162,53 @@ env = {
     "WANDB_DIR": f"{VOLUME_PATH}/wandb",
 }
 
-if hasattr(image, "env"):
-    image = image.env(env)
+stable_image = _build_modal_image(DEFAULT_BASE_IMAGE, DEFAULT_TORCH_INSTALL)
+compat_image = _build_modal_image(DEFAULT_COMPAT_BASE_IMAGE, COMPAT_TORCH_INSTALL)
 
+if hasattr(stable_image, "env"):
+    stable_image = stable_image.env(env)
+if hasattr(compat_image, "env"):
+    compat_image = compat_image.env(env)
 
 _APP_FUNCTION_SUPPORTS_ENV = "env" in inspect.signature(app.function).parameters
 
 
-def _modal_function_kwargs(**kwargs):
+def _modal_function_kwargs(function_env: dict[str, str] | None = None, **kwargs):
     function_kwargs = dict(kwargs)
     if _APP_FUNCTION_SUPPORTS_ENV:
-        function_kwargs["env"] = env
+        merged_env = dict(env)
+        if function_env:
+            merged_env.update(function_env)
+        function_kwargs["env"] = merged_env
     return function_kwargs
+
+
+RUNTIME_PROFILES = {
+    T4_STABLE_PROFILE: RuntimeProfile(
+        name=T4_STABLE_PROFILE,
+        gpu=T4_GPU,
+        image=stable_image,
+        description="Stable baseline validated on T4 with the current Modal image.",
+        function_env={"HORA_MODAL_RUNTIME_PROFILE": T4_STABLE_PROFILE},
+    ),
+    A100_PROBE_PROFILE: RuntimeProfile(
+        name=A100_PROBE_PROFILE,
+        gpu=A100_PROBE_GPU,
+        image=stable_image,
+        description="Current Modal image on an explicit A100 for compatibility probing.",
+        function_env={
+            "HORA_MODAL_RUNTIME_PROFILE": A100_PROBE_PROFILE,
+            "CUDA_LAUNCH_BLOCKING": "1",
+        },
+    ),
+    A100_COMPAT_PROFILE: RuntimeProfile(
+        name=A100_COMPAT_PROFILE,
+        gpu=A100_COMPAT_GPU,
+        image=compat_image,
+        description="A100 profile with a more conservative Torch/CUDA stack.",
+        function_env={"HORA_MODAL_RUNTIME_PROFILE": A100_COMPAT_PROFILE},
+    ),
+}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -153,6 +217,14 @@ def _modal_function_kwargs(**kwargs):
 
 def get_output_name(run_name: str) -> str:
     return f"{DEFAULT_OUTPUT_PREFIX}/{run_name}"
+
+
+def get_runtime_profile(runtime_profile: str = DEFAULT_RUNTIME_PROFILE) -> RuntimeProfile:
+    try:
+        return RUNTIME_PROFILES[runtime_profile]
+    except KeyError as exc:
+        choices = ", ".join(RUNTIME_PROFILE_CHOICES)
+        raise ValueError(f"Unsupported runtime profile: {runtime_profile}. Expected one of: {choices}") from exc
 
 
 def parse_overrides(overrides: str) -> tuple[str, ...]:
@@ -242,6 +314,38 @@ def build_stage2_command(run_name: str, seed: int = 0, extra_args: tuple[str, ..
     ]
 
 
+def emit_runtime_diagnostics(runtime_profile: str):
+    profile = get_runtime_profile(runtime_profile)
+    print(f"[hora] Runtime profile: {profile.name}")
+    print(f"[hora] Requested Modal GPU: {profile.gpu}")
+    print(f"[hora] Profile description: {profile.description}")
+
+    diagnostic_commands = [
+        ["nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"],
+        [
+            CONDA_PYTHON,
+            "-c",
+            (
+                "import json, torch; "
+                "info = {"
+                "'torch_version': torch.__version__, "
+                "'torch_cuda': torch.version.cuda, "
+                "'cuda_available': torch.cuda.is_available(), "
+                "'device_name': torch.cuda.get_device_name(0) if torch.cuda.is_available() else None, "
+                "'device_capability': torch.cuda.get_device_capability(0) if torch.cuda.is_available() else None, "
+                "'cudnn_version': torch.backends.cudnn.version()"
+                "}; "
+                "print(json.dumps(info, sort_keys=True))"
+            ),
+        ],
+    ]
+    for command in diagnostic_commands:
+        try:
+            subprocess.run(command, cwd=PROJECT_DIR, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError) as exc:
+            print(f"[hora] Warning: failed to run diagnostic command {command}: {exc}")
+
+
 def _run_with_periodic_commits(cmd: list[str]):
     """Run a subprocess, committing the volume periodically to persist checkpoints."""
     proc = subprocess.Popen(cmd, cwd=PROJECT_DIR)
@@ -266,17 +370,48 @@ def _run_with_periodic_commits(cmd: list[str]):
         raise subprocess.CalledProcessError(returncode, cmd)
 
 
-def run_requested_stages(run_name: str, seed: int = 0, stage: str = "both", extra_args: tuple[str, ...] = ()):
+def _run_stage(stage: int, run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()):
+    setup_project_symlinks()
+    if stage == 1:
+        check_no_overwrite(run_name, stage=1)
+        cmd = build_stage1_command(run_name, seed=seed, extra_args=extra_args)
+    elif stage == 2:
+        check_stage1_exists(run_name)
+        check_no_overwrite(run_name, stage=2)
+        cmd = build_stage2_command(run_name, seed=seed, extra_args=extra_args)
+    else:
+        raise ValueError(f"Unsupported stage: {stage}")
+    _run_with_periodic_commits(cmd)
+
+
+def get_stage_remote_functions(runtime_profile: str = DEFAULT_RUNTIME_PROFILE):
+    get_runtime_profile(runtime_profile)
+    if runtime_profile == T4_STABLE_PROFILE:
+        return train_stage1_remote, train_stage2_remote
+    if runtime_profile == A100_PROBE_PROFILE:
+        return train_stage1_a100_probe_remote, train_stage2_a100_probe_remote
+    return train_stage1_a100_compat_remote, train_stage2_a100_compat_remote
+
+
+def run_requested_stages(
+    run_name: str,
+    seed: int = 0,
+    stage: str = "both",
+    extra_args: tuple[str, ...] = (),
+    runtime_profile: str = DEFAULT_RUNTIME_PROFILE,
+):
     if stage not in ("1", "2", "both"):
         raise ValueError(f"Unsupported stage selection: {stage}")
+    profile = get_runtime_profile(runtime_profile)
+    stage1_remote, stage2_remote = get_stage_remote_functions(profile.name)
 
     if stage in ("1", "both"):
-        print(f"[hora] Starting stage 1 training: {run_name}")
-        train_stage1_remote.remote(run_name, seed, extra_args)
+        print(f"[hora] Starting stage 1 training: {run_name} [{profile.name}]")
+        stage1_remote.remote(run_name, seed, extra_args)
 
     if stage in ("2", "both"):
-        print(f"[hora] Starting stage 2 training: {run_name}")
-        train_stage2_remote.remote(run_name, seed, extra_args)
+        print(f"[hora] Starting stage 2 training: {run_name} [{profile.name}]")
+        stage2_remote.remote(run_name, seed, extra_args)
 
     print(f"[hora] Done. Outputs on volume at /vol/outputs/{get_output_name(run_name)}/")
 
@@ -289,7 +424,7 @@ def run_requested_stages(run_name: str, seed: int = 0, stage: str = "both", extr
 @app.function(**_modal_function_kwargs(
     volumes={VOLUME_PATH: volume},
     timeout=1800,
-    image=image,
+    image=stable_image,
 ))
 def setup_cache_remote():
     """One-time: download and unzip the grasp pose cache onto the volume."""
@@ -312,36 +447,95 @@ def setup_cache_remote():
 @app.function(**_modal_function_kwargs(
     volumes={VOLUME_PATH: volume},
     timeout=DEFAULT_TIMEOUT_SECONDS,
-    image=image,
+    image=RUNTIME_PROFILES[T4_STABLE_PROFILE].image,
     secrets=function_secrets,
-    gpu=DEFAULT_GPU,
+    gpu=RUNTIME_PROFILES[T4_STABLE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[T4_STABLE_PROFILE].function_env,
 ))
 def train_stage1_remote(run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()):
     """Stage 1: PPO training with privileged object information."""
-    setup_project_symlinks()
-    check_no_overwrite(run_name, stage=1)
-    cmd = build_stage1_command(run_name, seed=seed, extra_args=extra_args)
-    _run_with_periodic_commits(cmd)
+    emit_runtime_diagnostics(T4_STABLE_PROFILE)
+    _run_stage(1, run_name, seed=seed, extra_args=extra_args)
 
 
 @app.function(**_modal_function_kwargs(
     volumes={VOLUME_PATH: volume},
     timeout=DEFAULT_TIMEOUT_SECONDS,
-    image=image,
+    image=RUNTIME_PROFILES[T4_STABLE_PROFILE].image,
     secrets=function_secrets,
-    gpu=DEFAULT_GPU,
+    gpu=RUNTIME_PROFILES[T4_STABLE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[T4_STABLE_PROFILE].function_env,
 ))
 def train_stage2_remote(run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()):
     """Stage 2: Proprioceptive adaptation. Requires stage 1 checkpoint on volume."""
-    setup_project_symlinks()
-    check_stage1_exists(run_name)
-    check_no_overwrite(run_name, stage=2)
-    cmd = build_stage2_command(run_name, seed=seed, extra_args=extra_args)
-    _run_with_periodic_commits(cmd)
+    emit_runtime_diagnostics(T4_STABLE_PROFILE)
+    _run_stage(2, run_name, seed=seed, extra_args=extra_args)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[A100_PROBE_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[A100_PROBE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[A100_PROBE_PROFILE].function_env,
+))
+def train_stage1_a100_probe_remote(run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()):
+    """Stage 1 on the current image with an explicit A100 for diagnostics."""
+    emit_runtime_diagnostics(A100_PROBE_PROFILE)
+    _run_stage(1, run_name, seed=seed, extra_args=extra_args)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[A100_PROBE_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[A100_PROBE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[A100_PROBE_PROFILE].function_env,
+))
+def train_stage2_a100_probe_remote(run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()):
+    """Stage 2 on the current image with an explicit A100 for diagnostics."""
+    emit_runtime_diagnostics(A100_PROBE_PROFILE)
+    _run_stage(2, run_name, seed=seed, extra_args=extra_args)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[A100_COMPAT_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[A100_COMPAT_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[A100_COMPAT_PROFILE].function_env,
+))
+def train_stage1_a100_compat_remote(run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()):
+    """Stage 1 on the alternate A100 compatibility image."""
+    emit_runtime_diagnostics(A100_COMPAT_PROFILE)
+    _run_stage(1, run_name, seed=seed, extra_args=extra_args)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[A100_COMPAT_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[A100_COMPAT_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[A100_COMPAT_PROFILE].function_env,
+))
+def train_stage2_a100_compat_remote(run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()):
+    """Stage 2 on the alternate A100 compatibility image."""
+    emit_runtime_diagnostics(A100_COMPAT_PROFILE)
+    _run_stage(2, run_name, seed=seed, extra_args=extra_args)
 
 
 @app.local_entrypoint()
-def main(run_name: str, seed: int = 0, stage: str = "both", overrides: str = ""):
+def main(
+    run_name: str,
+    seed: int = 0,
+    stage: str = "both",
+    overrides: str = "",
+    runtime_profile: str = DEFAULT_RUNTIME_PROFILE,
+):
     """
     Train HORA on Modal.
 
@@ -350,5 +544,12 @@ def main(run_name: str, seed: int = 0, stage: str = "both", overrides: str = "")
         seed: Random seed (default: 0).
         stage: Which stage to train — "1", "2", or "both" (default).
         overrides: Extra Hydra overrides passed to train.py.
+        runtime_profile: Modal runtime profile. One of t4_stable, a100_probe, a100_compat.
     """
-    run_requested_stages(run_name, seed=seed, stage=stage, extra_args=parse_overrides(overrides))
+    run_requested_stages(
+        run_name,
+        seed=seed,
+        stage=stage,
+        extra_args=parse_overrides(overrides),
+        runtime_profile=runtime_profile,
+    )

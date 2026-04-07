@@ -8,8 +8,27 @@ import modal_train
 
 def test_modal_train_module_exports_expected_entrypoints():
     assert modal_train.env["WANDB_DIR"] == f"{modal_train.VOLUME_PATH}/wandb"
+    assert modal_train.DEFAULT_RUNTIME_PROFILE == modal_train.T4_STABLE_PROFILE
     assert hasattr(modal_train.train_stage1_remote, "remote")
     assert hasattr(modal_train.train_stage2_remote, "remote")
+    assert hasattr(modal_train.train_stage1_a100_probe_remote, "remote")
+    assert hasattr(modal_train.train_stage2_a100_probe_remote, "remote")
+    assert hasattr(modal_train.train_stage1_a100_compat_remote, "remote")
+    assert hasattr(modal_train.train_stage2_a100_compat_remote, "remote")
+
+
+def test_runtime_profiles_are_explicit_and_validated():
+    t4_profile = modal_train.get_runtime_profile(modal_train.T4_STABLE_PROFILE)
+    a100_probe = modal_train.get_runtime_profile(modal_train.A100_PROBE_PROFILE)
+    a100_compat = modal_train.get_runtime_profile(modal_train.A100_COMPAT_PROFILE)
+
+    assert t4_profile.gpu == modal_train.T4_GPU
+    assert a100_probe.gpu == modal_train.A100_PROBE_GPU
+    assert a100_probe.function_env["CUDA_LAUNCH_BLOCKING"] == "1"
+    assert a100_compat.gpu == modal_train.A100_COMPAT_GPU
+
+    with pytest.raises(ValueError):
+        modal_train.get_runtime_profile("bogus")
 
 
 def test_parse_overrides_respects_shell_quoting():
@@ -129,7 +148,13 @@ def test_run_requested_stages_dispatches_requested_remote_calls(monkeypatch):
         SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("stage2", run_name, seed, extra_args))),
     )
 
-    modal_train.run_requested_stages("demo", seed=3, stage="both", extra_args=("task.env.numEnvs=64",))
+    modal_train.run_requested_stages(
+        "demo",
+        seed=3,
+        stage="both",
+        extra_args=("task.env.numEnvs=64",),
+        runtime_profile=modal_train.T4_STABLE_PROFILE,
+    )
 
     assert calls == [
         ("stage1", "demo", 3, ("task.env.numEnvs=64",)),
@@ -137,14 +162,42 @@ def test_run_requested_stages_dispatches_requested_remote_calls(monkeypatch):
     ]
 
 
+def test_run_requested_stages_uses_selected_a100_profile(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        modal_train,
+        "train_stage1_a100_probe_remote",
+        SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("probe-stage1", run_name, seed, extra_args))),
+    )
+    monkeypatch.setattr(
+        modal_train,
+        "train_stage2_a100_probe_remote",
+        SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("probe-stage2", run_name, seed, extra_args))),
+    )
+
+    modal_train.run_requested_stages(
+        "demo",
+        seed=9,
+        stage="both",
+        extra_args=("train.ppo.max_agent_steps=1024",),
+        runtime_profile=modal_train.A100_PROBE_PROFILE,
+    )
+
+    assert calls == [
+        ("probe-stage1", "demo", 9, ("train.ppo.max_agent_steps=1024",)),
+        ("probe-stage2", "demo", 9, ("train.ppo.max_agent_steps=1024",)),
+    ]
+
+
 def test_main_parses_overrides_before_dispatch(monkeypatch):
     captured = {}
 
-    def fake_run_requested_stages(run_name, seed=0, stage="both", extra_args=()):
+    def fake_run_requested_stages(run_name, seed=0, stage="both", extra_args=(), runtime_profile=modal_train.DEFAULT_RUNTIME_PROFILE):
         captured["run_name"] = run_name
         captured["seed"] = seed
         captured["stage"] = stage
         captured["extra_args"] = extra_args
+        captured["runtime_profile"] = runtime_profile
 
     monkeypatch.setattr(modal_train, "run_requested_stages", fake_run_requested_stages)
 
@@ -153,6 +206,7 @@ def test_main_parses_overrides_before_dispatch(monkeypatch):
         seed=5,
         stage="2",
         overrides='task.env.numEnvs=64 "train.notes=hello world"',
+        runtime_profile=modal_train.A100_COMPAT_PROFILE,
     )
 
     assert captured == {
@@ -160,4 +214,5 @@ def test_main_parses_overrides_before_dispatch(monkeypatch):
         "seed": 5,
         "stage": "2",
         "extra_args": ("task.env.numEnvs=64", "train.notes=hello world"),
+        "runtime_profile": modal_train.A100_COMPAT_PROFILE,
     }
