@@ -18,6 +18,12 @@ Usage:
 
     # Pass extra Hydra overrides
     modal run modal_train.py --run-name my_exp --overrides "task.env.numEnvs=4096 train.ppo.max_agent_steps=1024"
+
+    # Experiment: Run comparison between naively concatenating contact-force tactile signal v.s. baseline in stage two.
+    # Note: stage 1 checkpoint best.pth should be uploaded first using modal volume put hora-volume 
+    modal run modal_train.py --run-name baseline --runtime-profile a100_compat --stage 2
+    modal run modal_train.py --run-name naive_tactile --runtime-profile a100_compat --stage 2 --overrides "task.env.hora.useTactile=True"
+
 """
 
 from __future__ import annotations
