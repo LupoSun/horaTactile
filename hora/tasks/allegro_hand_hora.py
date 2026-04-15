@@ -14,6 +14,7 @@ from isaacgym.torch_utils import to_torch, unscale, quat_apply, tensor_clamp, to
 import torch
 from glob import glob
 from hora.utils.misc import tprint
+from hora.utils.tactile_utils import resolve_fingertip_body_indices
 from .base.vec_task import VecTask
 
 
@@ -79,9 +80,8 @@ class AllegroHandHora(VecTask):
 
         if self.use_tactile:
             body_dict = self.gym.get_asset_rigid_body_dict(self.hand_asset)
-            tip_names = ['link_3.0', 'link_7.0', 'link_11.0', 'link_15.0']
             self.fingertip_indices = to_torch(
-                [body_dict[name] for name in tip_names], dtype=torch.long, device=self.device
+                resolve_fingertip_body_indices(body_dict), dtype=torch.long, device=self.device
             )
 
         self.num_dofs = self.gym.get_sim_dof_count(self.sim) // self.num_envs

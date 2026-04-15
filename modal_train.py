@@ -12,17 +12,22 @@ Usage:
     modal run modal_train.py --run-name my_exp --stage 1
     modal run modal_train.py --run-name my_exp --stage 2
 
+    # Train baseline stage 1 + tactile stage 2
+    modal run modal_train.py --run-name my_exp --runtime-profile h100_stable --tactile
+
     # Select an explicit runtime profile
+    modal run modal_train.py --run-name my_exp --runtime-profile h100_stable --stage 1
     modal run modal_train.py --run-name my_exp --runtime-profile a100_probe --stage 1
     modal run modal_train.py --run-name my_exp --runtime-profile a100_compat --stage 1
+    modal run modal_train.py --run-name my_exp --runtime-profile h100_probe --stage 1
+    modal run modal_train.py --run-name my_exp --runtime-profile h100_compat --stage 1
 
     # Pass extra Hydra overrides
     modal run modal_train.py --run-name my_exp --overrides "task.env.numEnvs=4096 train.ppo.max_agent_steps=1024"
 
-    # Experiment: Run comparison between naively concatenating contact-force tactile signal v.s. baseline in stage two.
-    # Note: stage 1 checkpoint best.pth should be uploaded first using modal volume put hora-volume 
-    modal run modal_train.py --run-name baseline --runtime-profile a100_compat --stage 2
-    modal run modal_train.py --run-name naive_tactile --runtime-profile a100_compat --stage 2 --overrides "task.env.hora.useTactile=True"
+    # Compare baseline Stage 2 vs tactile-enabled Stage 2
+    modal run modal_train.py --run-name baseline --runtime-profile h100_stable --stage 2
+    modal run modal_train.py --run-name tactile --runtime-profile h100_stable --stage 2 --tactile
 
 """
 
@@ -40,6 +45,18 @@ from omegaconf import OmegaConf
 
 from hora.utils.checkpoint_utils import get_stage_best_checkpoint_relpath
 
+
+def _resolve_modal_gpu_name(preferred: str, fallback: str | None = None) -> str:
+    parse_gpu_config = getattr(getattr(modal, "gpu", None), "parse_gpu_config", None)
+    if parse_gpu_config is None:
+        return preferred
+    try:
+        parse_gpu_config(preferred)
+        return preferred
+    except Exception:
+        return fallback or preferred
+
+
 APP_NAME = "hora-train"
 PROJECT_DIR = "/root/project"
 VOLUME_PATH = "/vol"
@@ -47,13 +64,26 @@ CONDA_PYTHON = "/usr/bin/python3"
 T4_STABLE_PROFILE = "t4_stable"
 A100_PROBE_PROFILE = "a100_probe"
 A100_COMPAT_PROFILE = "a100_compat"
-RUNTIME_PROFILE_CHOICES = (T4_STABLE_PROFILE, A100_PROBE_PROFILE, A100_COMPAT_PROFILE)
+H100_STABLE_PROFILE = "h100_stable"
+H100_PROBE_PROFILE = "h100_probe"
+H100_COMPAT_PROFILE = "h100_compat"
+RUNTIME_PROFILE_CHOICES = (
+    T4_STABLE_PROFILE,
+    A100_PROBE_PROFILE,
+    A100_COMPAT_PROFILE,
+    H100_STABLE_PROFILE,
+    H100_PROBE_PROFILE,
+    H100_COMPAT_PROFILE,
+)
 DEFAULT_RUNTIME_PROFILE = os.environ.get("MODAL_RUNTIME_PROFILE", T4_STABLE_PROFILE)
 DEFAULT_BASE_IMAGE = os.environ.get("MODAL_BASE_IMAGE", "nvidia/cuda:11.8.0-cudnn8-devel-ubuntu20.04")
 DEFAULT_COMPAT_BASE_IMAGE = os.environ.get("MODAL_COMPAT_BASE_IMAGE", "nvidia/cuda:11.7.1-cudnn8-devel-ubuntu20.04")
 T4_GPU = os.environ.get("MODAL_T4_GPU", "T4")
 A100_PROBE_GPU = os.environ.get("MODAL_A100_GPU", "A100-40GB")
 A100_COMPAT_GPU = os.environ.get("MODAL_A100_COMPAT_GPU", A100_PROBE_GPU)
+H100_STABLE_GPU = _resolve_modal_gpu_name(os.environ.get("MODAL_H100_STABLE_GPU", "H100!"), fallback="H100")
+H100_PROBE_GPU = _resolve_modal_gpu_name(os.environ.get("MODAL_H100_GPU", "H100!"), fallback="H100")
+H100_COMPAT_GPU = _resolve_modal_gpu_name(os.environ.get("MODAL_H100_COMPAT_GPU", H100_PROBE_GPU), fallback="H100")
 DEFAULT_TORCH_INSTALL = os.environ.get(
     "MODAL_TORCH_INSTALL",
     "torch==2.1.2+cu118 torchvision==0.16.2+cu118 torchaudio==2.1.2+cu118 "
@@ -141,10 +171,6 @@ def _build_modal_image(base_image: str, torch_install: str):
         )
     )
 
-    netrc = Path("~/.netrc").expanduser()
-    if netrc.is_file():
-        image_obj = image_obj.add_local_file(netrc, remote_path="/root/.netrc", copy=True)
-
     if hasattr(image_obj, "add_local_dir"):
         image_obj = image_obj.add_local_dir(
             ".",
@@ -170,7 +196,6 @@ env = {
     "PYTHONPATH": PROJECT_DIR,
     "PYTHONUNBUFFERED": "1",
     "WANDB_DIR": f"{VOLUME_PATH}/wandb",
-    "WANDB_MODE": "online",
 }
 
 stable_image = _build_modal_image(DEFAULT_BASE_IMAGE, DEFAULT_TORCH_INSTALL)
@@ -219,6 +244,30 @@ RUNTIME_PROFILES = {
         description="A100 profile with a more conservative Torch/CUDA stack.",
         function_env={"HORA_MODAL_RUNTIME_PROFILE": A100_COMPAT_PROFILE},
     ),
+    H100_STABLE_PROFILE: RuntimeProfile(
+        name=H100_STABLE_PROFILE,
+        gpu=H100_STABLE_GPU,
+        image=stable_image,
+        description="Stable Hopper path validated on H100 with the current Modal image.",
+        function_env={"HORA_MODAL_RUNTIME_PROFILE": H100_STABLE_PROFILE},
+    ),
+    H100_PROBE_PROFILE: RuntimeProfile(
+        name=H100_PROBE_PROFILE,
+        gpu=H100_PROBE_GPU,
+        image=stable_image,
+        description="Current Modal image on an explicit H100 for compatibility probing.",
+        function_env={
+            "HORA_MODAL_RUNTIME_PROFILE": H100_PROBE_PROFILE,
+            "CUDA_LAUNCH_BLOCKING": "1",
+        },
+    ),
+    H100_COMPAT_PROFILE: RuntimeProfile(
+        name=H100_COMPAT_PROFILE,
+        gpu=H100_COMPAT_GPU,
+        image=compat_image,
+        description="H100 profile with a more conservative Torch/CUDA stack.",
+        function_env={"HORA_MODAL_RUNTIME_PROFILE": H100_COMPAT_PROFILE},
+    ),
 }
 
 # ---------------------------------------------------------------------------
@@ -243,6 +292,14 @@ def parse_overrides(overrides: str) -> tuple[str, ...]:
     if not stripped:
         return ()
     return tuple(shlex.split(stripped))
+
+
+def with_stage2_tactile_override(extra_args: tuple[str, ...], tactile: bool = False) -> tuple[str, ...]:
+    if not tactile:
+        return extra_args
+    if any(arg.startswith("task.env.hora.useTactile=") for arg in extra_args):
+        return extra_args
+    return (*extra_args, "task.env.hora.useTactile=True")
 
 
 def expected_cache_files(config_path: Path = TASK_CONFIG_PATH) -> tuple[str, ...]:
@@ -315,7 +372,12 @@ def build_stage1_command(run_name: str, seed: int = 0, extra_args: tuple[str, ..
     ]
 
 
-def build_stage2_command(run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()) -> list[str]:
+def build_stage2_command(
+    run_name: str,
+    seed: int = 0,
+    extra_args: tuple[str, ...] = (),
+    tactile: bool = False,
+) -> list[str]:
     return [
         CONDA_PYTHON, "train.py",
         f"task={DEFAULT_TASK_NAME}", "headless=True",
@@ -327,7 +389,7 @@ def build_stage2_command(run_name: str, seed: int = 0, extra_args: tuple[str, ..
         "train.ppo.priv_info=True", "train.ppo.proprio_adapt=True",
         f"train.ppo.output_name={get_output_name(run_name)}",
         f"checkpoint={get_stage_best_checkpoint_relpath(get_output_name(run_name), 1)}",
-        *extra_args,
+        *with_stage2_tactile_override(extra_args, tactile=tactile),
     ]
 
 
@@ -387,7 +449,7 @@ def _run_with_periodic_commits(cmd: list[str]):
         raise subprocess.CalledProcessError(returncode, cmd)
 
 
-def _run_stage(stage: int, run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()):
+def _run_stage(stage: int, run_name: str, seed: int = 0, extra_args: tuple[str, ...] = (), tactile: bool = False):
     setup_project_symlinks()
     if stage == 1:
         check_no_overwrite(run_name, stage=1)
@@ -395,7 +457,7 @@ def _run_stage(stage: int, run_name: str, seed: int = 0, extra_args: tuple[str, 
     elif stage == 2:
         check_stage1_exists(run_name)
         check_no_overwrite(run_name, stage=2)
-        cmd = build_stage2_command(run_name, seed=seed, extra_args=extra_args)
+        cmd = build_stage2_command(run_name, seed=seed, extra_args=extra_args, tactile=tactile)
     else:
         raise ValueError(f"Unsupported stage: {stage}")
     _run_with_periodic_commits(cmd)
@@ -407,7 +469,13 @@ def get_stage_remote_functions(runtime_profile: str = DEFAULT_RUNTIME_PROFILE):
         return train_stage1_remote, train_stage2_remote
     if runtime_profile == A100_PROBE_PROFILE:
         return train_stage1_a100_probe_remote, train_stage2_a100_probe_remote
-    return train_stage1_a100_compat_remote, train_stage2_a100_compat_remote
+    if runtime_profile == A100_COMPAT_PROFILE:
+        return train_stage1_a100_compat_remote, train_stage2_a100_compat_remote
+    if runtime_profile == H100_STABLE_PROFILE:
+        return train_stage1_h100_stable_remote, train_stage2_h100_stable_remote
+    if runtime_profile == H100_PROBE_PROFILE:
+        return train_stage1_h100_probe_remote, train_stage2_h100_probe_remote
+    return train_stage1_h100_compat_remote, train_stage2_h100_compat_remote
 
 
 def run_requested_stages(
@@ -416,6 +484,7 @@ def run_requested_stages(
     stage: str = "both",
     extra_args: tuple[str, ...] = (),
     runtime_profile: str = DEFAULT_RUNTIME_PROFILE,
+    tactile: bool = False,
 ):
     if stage not in ("1", "2", "both"):
         raise ValueError(f"Unsupported stage selection: {stage}")
@@ -428,7 +497,7 @@ def run_requested_stages(
 
     if stage in ("2", "both"):
         print(f"[hora] Starting stage 2 training: {run_name} [{profile.name}]")
-        stage2_remote.remote(run_name, seed, extra_args)
+        stage2_remote.remote(run_name, seed, with_stage2_tactile_override(extra_args, tactile=tactile))
 
     print(f"[hora] Done. Outputs on volume at /vol/outputs/{get_output_name(run_name)}/")
 
@@ -545,6 +614,90 @@ def train_stage2_a100_compat_remote(run_name: str, seed: int = 0, extra_args: tu
     _run_stage(2, run_name, seed=seed, extra_args=extra_args)
 
 
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[H100_STABLE_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[H100_STABLE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[H100_STABLE_PROFILE].function_env,
+))
+def train_stage1_h100_stable_remote(run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()):
+    """Stage 1 on the validated H100 stable path."""
+    emit_runtime_diagnostics(H100_STABLE_PROFILE)
+    _run_stage(1, run_name, seed=seed, extra_args=extra_args)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[H100_STABLE_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[H100_STABLE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[H100_STABLE_PROFILE].function_env,
+))
+def train_stage2_h100_stable_remote(run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()):
+    """Stage 2 on the validated H100 stable path."""
+    emit_runtime_diagnostics(H100_STABLE_PROFILE)
+    _run_stage(2, run_name, seed=seed, extra_args=extra_args)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[H100_PROBE_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[H100_PROBE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[H100_PROBE_PROFILE].function_env,
+))
+def train_stage1_h100_probe_remote(run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()):
+    """Stage 1 on the current image with an explicit H100 for diagnostics."""
+    emit_runtime_diagnostics(H100_PROBE_PROFILE)
+    _run_stage(1, run_name, seed=seed, extra_args=extra_args)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[H100_PROBE_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[H100_PROBE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[H100_PROBE_PROFILE].function_env,
+))
+def train_stage2_h100_probe_remote(run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()):
+    """Stage 2 on the current image with an explicit H100 for diagnostics."""
+    emit_runtime_diagnostics(H100_PROBE_PROFILE)
+    _run_stage(2, run_name, seed=seed, extra_args=extra_args)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[H100_COMPAT_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[H100_COMPAT_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[H100_COMPAT_PROFILE].function_env,
+))
+def train_stage1_h100_compat_remote(run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()):
+    """Stage 1 on the alternate H100 compatibility image."""
+    emit_runtime_diagnostics(H100_COMPAT_PROFILE)
+    _run_stage(1, run_name, seed=seed, extra_args=extra_args)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[H100_COMPAT_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[H100_COMPAT_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[H100_COMPAT_PROFILE].function_env,
+))
+def train_stage2_h100_compat_remote(run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()):
+    """Stage 2 on the alternate H100 compatibility image."""
+    emit_runtime_diagnostics(H100_COMPAT_PROFILE)
+    _run_stage(2, run_name, seed=seed, extra_args=extra_args)
+
+
 @app.local_entrypoint()
 def main(
     run_name: str,
@@ -552,6 +705,7 @@ def main(
     stage: str = "both",
     overrides: str = "",
     runtime_profile: str = DEFAULT_RUNTIME_PROFILE,
+    tactile: bool = False,
 ):
     """
     Train HORA on Modal.
@@ -561,7 +715,8 @@ def main(
         seed: Random seed (default: 0).
         stage: Which stage to train — "1", "2", or "both" (default).
         overrides: Extra Hydra overrides passed to train.py.
-        runtime_profile: Modal runtime profile. One of t4_stable, a100_probe, a100_compat.
+        runtime_profile: Modal runtime profile. One of t4_stable, a100_probe, a100_compat, h100_stable, h100_probe, h100_compat.
+        tactile: When true, append task.env.hora.useTactile=True to stage 2 only.
     """
     run_requested_stages(
         run_name,
@@ -569,4 +724,5 @@ def main(
         stage=stage,
         extra_args=parse_overrides(overrides),
         runtime_profile=runtime_profile,
+        tactile=tactile,
     )

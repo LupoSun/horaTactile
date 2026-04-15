@@ -15,17 +15,31 @@ def test_modal_train_module_exports_expected_entrypoints():
     assert hasattr(modal_train.train_stage2_a100_probe_remote, "remote")
     assert hasattr(modal_train.train_stage1_a100_compat_remote, "remote")
     assert hasattr(modal_train.train_stage2_a100_compat_remote, "remote")
+    assert hasattr(modal_train.train_stage1_h100_stable_remote, "remote")
+    assert hasattr(modal_train.train_stage2_h100_stable_remote, "remote")
+    assert hasattr(modal_train.train_stage1_h100_probe_remote, "remote")
+    assert hasattr(modal_train.train_stage2_h100_probe_remote, "remote")
+    assert hasattr(modal_train.train_stage1_h100_compat_remote, "remote")
+    assert hasattr(modal_train.train_stage2_h100_compat_remote, "remote")
 
 
 def test_runtime_profiles_are_explicit_and_validated():
     t4_profile = modal_train.get_runtime_profile(modal_train.T4_STABLE_PROFILE)
     a100_probe = modal_train.get_runtime_profile(modal_train.A100_PROBE_PROFILE)
     a100_compat = modal_train.get_runtime_profile(modal_train.A100_COMPAT_PROFILE)
+    h100_stable = modal_train.get_runtime_profile(modal_train.H100_STABLE_PROFILE)
+    h100_probe = modal_train.get_runtime_profile(modal_train.H100_PROBE_PROFILE)
+    h100_compat = modal_train.get_runtime_profile(modal_train.H100_COMPAT_PROFILE)
 
     assert t4_profile.gpu == modal_train.T4_GPU
     assert a100_probe.gpu == modal_train.A100_PROBE_GPU
     assert a100_probe.function_env["CUDA_LAUNCH_BLOCKING"] == "1"
     assert a100_compat.gpu == modal_train.A100_COMPAT_GPU
+    assert h100_stable.gpu == modal_train.H100_STABLE_GPU
+    assert "CUDA_LAUNCH_BLOCKING" not in h100_stable.function_env
+    assert h100_probe.gpu == modal_train.H100_PROBE_GPU
+    assert h100_probe.function_env["CUDA_LAUNCH_BLOCKING"] == "1"
+    assert h100_compat.gpu == modal_train.H100_COMPAT_GPU
 
     with pytest.raises(ValueError):
         modal_train.get_runtime_profile("bogus")
@@ -36,6 +50,19 @@ def test_parse_overrides_respects_shell_quoting():
     assert modal_train.parse_overrides(overrides) == (
         "task.env.numEnvs=64",
         "train.notes=hello world",
+    )
+
+
+def test_with_stage2_tactile_override_appends_tactile_once():
+    assert modal_train.with_stage2_tactile_override(("train.ppo.max_agent_steps=1024",), tactile=False) == (
+        "train.ppo.max_agent_steps=1024",
+    )
+    assert modal_train.with_stage2_tactile_override(("train.ppo.max_agent_steps=1024",), tactile=True) == (
+        "train.ppo.max_agent_steps=1024",
+        "task.env.hora.useTactile=True",
+    )
+    assert modal_train.with_stage2_tactile_override(("task.env.hora.useTactile=False",), tactile=True) == (
+        "task.env.hora.useTactile=False",
     )
 
 
@@ -135,6 +162,11 @@ def test_build_stage_commands_include_journal_defaults():
     assert stage2_cmd[-1] == "train.ppo.max_agent_steps=1024"
 
 
+def test_build_stage2_command_can_enable_tactile():
+    stage2_cmd = modal_train.build_stage2_command("demo", tactile=True)
+    assert "task.env.hora.useTactile=True" in stage2_cmd
+
+
 def test_run_requested_stages_dispatches_requested_remote_calls(monkeypatch):
     calls = []
     monkeypatch.setattr(
@@ -189,15 +221,78 @@ def test_run_requested_stages_uses_selected_a100_profile(monkeypatch):
     ]
 
 
+def test_run_requested_stages_uses_selected_h100_profile(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        modal_train,
+        "train_stage1_h100_stable_remote",
+        SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("h100-stable-stage1", run_name, seed, extra_args))),
+    )
+    monkeypatch.setattr(
+        modal_train,
+        "train_stage2_h100_stable_remote",
+        SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("h100-stable-stage2", run_name, seed, extra_args))),
+    )
+
+    modal_train.run_requested_stages(
+        "demo",
+        seed=4,
+        stage="both",
+        extra_args=("train.ppo.max_agent_steps=1024",),
+        runtime_profile=modal_train.H100_STABLE_PROFILE,
+    )
+
+    assert calls == [
+        ("h100-stable-stage1", "demo", 4, ("train.ppo.max_agent_steps=1024",)),
+        ("h100-stable-stage2", "demo", 4, ("train.ppo.max_agent_steps=1024",)),
+    ]
+
+
+def test_run_requested_stages_applies_tactile_only_to_stage2(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        modal_train,
+        "train_stage1_h100_stable_remote",
+        SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("stage1", run_name, seed, extra_args))),
+    )
+    monkeypatch.setattr(
+        modal_train,
+        "train_stage2_h100_stable_remote",
+        SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("stage2", run_name, seed, extra_args))),
+    )
+
+    modal_train.run_requested_stages(
+        "demo",
+        seed=6,
+        stage="both",
+        extra_args=("train.ppo.max_agent_steps=1024",),
+        runtime_profile=modal_train.H100_STABLE_PROFILE,
+        tactile=True,
+    )
+
+    assert calls == [
+        ("stage1", "demo", 6, ("train.ppo.max_agent_steps=1024",)),
+        ("stage2", "demo", 6, ("train.ppo.max_agent_steps=1024", "task.env.hora.useTactile=True")),
+    ]
+
+
 def test_main_parses_overrides_before_dispatch(monkeypatch):
     captured = {}
 
-    def fake_run_requested_stages(run_name, seed=0, stage="both", extra_args=(), runtime_profile=modal_train.DEFAULT_RUNTIME_PROFILE):
+    def fake_run_requested_stages(
+        run_name,
+        seed=0,
+        stage="both",
+        extra_args=(),
+        runtime_profile=modal_train.DEFAULT_RUNTIME_PROFILE,
+        tactile=False,
+    ):
         captured["run_name"] = run_name
         captured["seed"] = seed
         captured["stage"] = stage
         captured["extra_args"] = extra_args
         captured["runtime_profile"] = runtime_profile
+        captured["tactile"] = tactile
 
     monkeypatch.setattr(modal_train, "run_requested_stages", fake_run_requested_stages)
 
@@ -207,6 +302,7 @@ def test_main_parses_overrides_before_dispatch(monkeypatch):
         stage="2",
         overrides='task.env.numEnvs=64 "train.notes=hello world"',
         runtime_profile=modal_train.A100_COMPAT_PROFILE,
+        tactile=True,
     )
 
     assert captured == {
@@ -215,4 +311,5 @@ def test_main_parses_overrides_before_dispatch(monkeypatch):
         "stage": "2",
         "extra_args": ("task.env.numEnvs=64", "train.notes=hello world"),
         "runtime_profile": modal_train.A100_COMPAT_PROFILE,
+        "tactile": True,
     }
