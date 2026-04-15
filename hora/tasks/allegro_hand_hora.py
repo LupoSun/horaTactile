@@ -12,8 +12,8 @@ from isaacgym import gymtorch
 from isaacgym import gymapi
 from isaacgym.torch_utils import to_torch, unscale, quat_apply, tensor_clamp, torch_rand_float, quat_conjugate, quat_mul
 import torch
-from glob import glob
 from hora.utils.misc import tprint
+from hora.utils.object_assets import build_object_asset_catalog
 from hora.utils.tactile_utils import resolve_fingertip_body_indices
 from .base.vec_task import VecTask
 
@@ -530,36 +530,13 @@ class AllegroHandHora(VecTask):
     def _setup_object_info(self, o_config):
         self.object_type = o_config['type']
         raw_prob = o_config['sampleProb']
-        assert (sum(raw_prob) == 1)
-
         primitive_list = self.object_type.split('+')
         print('---- Primitive List ----')
         print(primitive_list)
-        self.object_type_prob = []
-        self.object_type_list = []
-        self.asset_files_dict = {
-            'simple_tennis_ball': 'assets/ball.urdf',
-        }
-        for p_id, prim in enumerate(primitive_list):
-            if 'cuboid' in prim:
-                subset_name = self.object_type.split('_')[-1]
-                cuboids = sorted(glob(f'../assets/cuboid/{subset_name}/*.urdf'))
-                cuboid_list = [f'cuboid_{i}' for i in range(len(cuboids))]
-                self.object_type_list += cuboid_list
-                for i, name in enumerate(cuboids):
-                    self.asset_files_dict[f'cuboid_{i}'] = name.replace('../assets/', '')
-                self.object_type_prob += [raw_prob[p_id] / len(cuboid_list) for _ in cuboid_list]
-            elif 'cylinder' in prim:
-                subset_name = self.object_type.split('_')[-1]
-                cylinders = sorted(glob(f'assets/cylinder/{subset_name}/*.urdf'))
-                cylinder_list = [f'cylinder_{i}' for i in range(len(cylinders))]
-                self.object_type_list += cylinder_list
-                for i, name in enumerate(cylinders):
-                    self.asset_files_dict[f'cylinder_{i}'] = name.replace('../assets/', '')
-                self.object_type_prob += [raw_prob[p_id] / len(cylinder_list) for _ in cylinder_list]
-            else:
-                self.object_type_list += [prim]
-                self.object_type_prob += [raw_prob[p_id]]
+        self.object_type_list, self.object_type_prob, self.asset_files_dict = build_object_asset_catalog(
+            self.object_type,
+            raw_prob,
+        )
         print('---- Object List ----')
         print(self.object_type_list)
         assert (len(self.object_type_list) == len(self.object_type_prob))
