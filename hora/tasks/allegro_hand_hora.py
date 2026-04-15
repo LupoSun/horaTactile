@@ -569,7 +569,7 @@ class AllegroHandHora(VecTask):
         self.prop_hist_len = self.config['env']['hora']['propHistoryLen']
         self.num_env_factors = self.config['env']['hora']['privInfoDim']
         self.priv_info_buf = torch.zeros((num_envs, self.num_env_factors), device=self.device, dtype=torch.float)
-        self.hist_obs_dim = 44 if self.use_tactile else 32
+        self.hist_obs_dim = 44 if self.use_tactile else 32  # 32 proprio + 12 tactile (when enabled)
         self.proprio_hist_buf = torch.zeros((num_envs, self.prop_hist_len, self.hist_obs_dim), device=self.device, dtype=torch.float)
         if self.use_tactile:
             self.tactile_hist_buf = torch.zeros((num_envs, self.prop_hist_len, 12), device=self.device, dtype=torch.float)
