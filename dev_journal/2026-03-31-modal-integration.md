@@ -246,6 +246,63 @@ Result:
 - W&B initialized in offline mode
 - exited cleanly on the short `max_agent_steps=1024` cap
 
+## Follow-up GPU Compatibility Matrix
+
+Additional Modal compatibility testing was run on **April 15, 2026** to understand why the original default `A100` path was unstable while `T4` worked.
+
+### Final observed behavior
+
+| GPU / Profile | Stack | Result |
+|---|---|---|
+| `T4` / `t4_stable` | `torch 2.1.2+cu118`, CUDA 11.8 | Works |
+| `A100-40GB` / `a100_probe` | `torch 2.1.2+cu118`, CUDA 11.8 | Fails |
+| `A100-40GB` / `a100_compat` | `torch 1.13.1+cu117`, CUDA 11.7 | Works |
+| `H100 80GB` / `h100_probe` | `torch 2.1.2+cu118`, CUDA 11.8 | Works |
+| `H100 80GB` / `h100_stable` | `torch 2.1.2+cu118`, CUDA 11.8 | Works |
+
+### What this means
+
+- The failure is **not** caused by the custom mesh pipeline; the compatibility tests used the stock `cylinder_default` object from `modal_train.py`.
+- The failure is **not** a generic “powerful GPU” issue; H100 works on the current stack.
+- The evidence points to an **A100-specific compatibility problem** in the combination of:
+  - Isaac Gym Preview 4
+  - GPU PhysX
+  - the newer `torch 2.1.2+cu118` Modal image
+
+In the failing `a100_probe` run, the A100 reproduced the crash with:
+- `CUDA_LAUNCH_BLOCKING=1`
+- explicit `A100-40GB`
+- low-level NVIDIA `Xid 31` MMU fault logging before the Python-side illegal memory access surfaced
+
+That made the problem much more likely to be a runtime / kernel-path issue than a bug in the HORA reward logic.
+
+### Runtime profiles added
+
+`modal_train.py` now carries multiple explicit runtime profiles instead of relying on a single generic GPU default:
+
+- `t4_stable`
+  - validated baseline on T4
+- `a100_probe`
+  - current image on explicit `A100-40GB`
+  - includes `CUDA_LAUNCH_BLOCKING=1` for debugging
+- `a100_compat`
+  - A100 fallback image using `torch 1.13.1+cu117`
+- `h100_probe`
+  - current image on explicit `H100!`
+  - includes `CUDA_LAUNCH_BLOCKING=1` for debugging
+- `h100_stable`
+  - recommended Hopper production path
+  - same current working stack as `h100_probe`, but without the debug slowdown
+- `h100_compat`
+  - conservative Hopper fallback image using the older stack
+
+### Current recommendation
+
+For real training:
+- use `h100_stable` on H100
+- use `a100_compat` on A100
+- keep `a100_probe` and `h100_probe` for diagnostics only
+
 ## Issues Encountered And Resolved
 
 This integration only stabilized after a number of real issues showed up during review and smoke testing.

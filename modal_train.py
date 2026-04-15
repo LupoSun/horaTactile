@@ -13,8 +13,11 @@ Usage:
     modal run modal_train.py --run-name my_exp --stage 2
 
     # Select an explicit runtime profile
+    modal run modal_train.py --run-name my_exp --runtime-profile h100_stable --stage 1
     modal run modal_train.py --run-name my_exp --runtime-profile a100_probe --stage 1
     modal run modal_train.py --run-name my_exp --runtime-profile a100_compat --stage 1
+    modal run modal_train.py --run-name my_exp --runtime-profile h100_probe --stage 1
+    modal run modal_train.py --run-name my_exp --runtime-profile h100_compat --stage 1
 
     # Pass extra Hydra overrides
     modal run modal_train.py --run-name my_exp --overrides "task.env.numEnvs=4096 train.ppo.max_agent_steps=1024"
@@ -34,6 +37,18 @@ from omegaconf import OmegaConf
 
 from hora.utils.checkpoint_utils import get_stage_best_checkpoint_relpath
 
+
+def _resolve_modal_gpu_name(preferred: str, fallback: str | None = None) -> str:
+    parse_gpu_config = getattr(getattr(modal, "gpu", None), "parse_gpu_config", None)
+    if parse_gpu_config is None:
+        return preferred
+    try:
+        parse_gpu_config(preferred)
+        return preferred
+    except Exception:
+        return fallback or preferred
+
+
 APP_NAME = "hora-train"
 PROJECT_DIR = "/root/project"
 VOLUME_PATH = "/vol"
@@ -41,13 +56,26 @@ CONDA_PYTHON = "/usr/bin/python3"
 T4_STABLE_PROFILE = "t4_stable"
 A100_PROBE_PROFILE = "a100_probe"
 A100_COMPAT_PROFILE = "a100_compat"
-RUNTIME_PROFILE_CHOICES = (T4_STABLE_PROFILE, A100_PROBE_PROFILE, A100_COMPAT_PROFILE)
+H100_STABLE_PROFILE = "h100_stable"
+H100_PROBE_PROFILE = "h100_probe"
+H100_COMPAT_PROFILE = "h100_compat"
+RUNTIME_PROFILE_CHOICES = (
+    T4_STABLE_PROFILE,
+    A100_PROBE_PROFILE,
+    A100_COMPAT_PROFILE,
+    H100_STABLE_PROFILE,
+    H100_PROBE_PROFILE,
+    H100_COMPAT_PROFILE,
+)
 DEFAULT_RUNTIME_PROFILE = os.environ.get("MODAL_RUNTIME_PROFILE", T4_STABLE_PROFILE)
 DEFAULT_BASE_IMAGE = os.environ.get("MODAL_BASE_IMAGE", "nvidia/cuda:11.8.0-cudnn8-devel-ubuntu20.04")
 DEFAULT_COMPAT_BASE_IMAGE = os.environ.get("MODAL_COMPAT_BASE_IMAGE", "nvidia/cuda:11.7.1-cudnn8-devel-ubuntu20.04")
 T4_GPU = os.environ.get("MODAL_T4_GPU", "T4")
 A100_PROBE_GPU = os.environ.get("MODAL_A100_GPU", "A100-40GB")
 A100_COMPAT_GPU = os.environ.get("MODAL_A100_COMPAT_GPU", A100_PROBE_GPU)
+H100_STABLE_GPU = _resolve_modal_gpu_name(os.environ.get("MODAL_H100_STABLE_GPU", "H100!"), fallback="H100")
+H100_PROBE_GPU = _resolve_modal_gpu_name(os.environ.get("MODAL_H100_GPU", "H100!"), fallback="H100")
+H100_COMPAT_GPU = _resolve_modal_gpu_name(os.environ.get("MODAL_H100_COMPAT_GPU", H100_PROBE_GPU), fallback="H100")
 DEFAULT_TORCH_INSTALL = os.environ.get(
     "MODAL_TORCH_INSTALL",
     "torch==2.1.2+cu118 torchvision==0.16.2+cu118 torchaudio==2.1.2+cu118 "
@@ -207,6 +235,30 @@ RUNTIME_PROFILES = {
         image=compat_image,
         description="A100 profile with a more conservative Torch/CUDA stack.",
         function_env={"HORA_MODAL_RUNTIME_PROFILE": A100_COMPAT_PROFILE},
+    ),
+    H100_STABLE_PROFILE: RuntimeProfile(
+        name=H100_STABLE_PROFILE,
+        gpu=H100_STABLE_GPU,
+        image=stable_image,
+        description="Stable Hopper path validated on H100 with the current Modal image.",
+        function_env={"HORA_MODAL_RUNTIME_PROFILE": H100_STABLE_PROFILE},
+    ),
+    H100_PROBE_PROFILE: RuntimeProfile(
+        name=H100_PROBE_PROFILE,
+        gpu=H100_PROBE_GPU,
+        image=stable_image,
+        description="Current Modal image on an explicit H100 for compatibility probing.",
+        function_env={
+            "HORA_MODAL_RUNTIME_PROFILE": H100_PROBE_PROFILE,
+            "CUDA_LAUNCH_BLOCKING": "1",
+        },
+    ),
+    H100_COMPAT_PROFILE: RuntimeProfile(
+        name=H100_COMPAT_PROFILE,
+        gpu=H100_COMPAT_GPU,
+        image=compat_image,
+        description="H100 profile with a more conservative Torch/CUDA stack.",
+        function_env={"HORA_MODAL_RUNTIME_PROFILE": H100_COMPAT_PROFILE},
     ),
 }
 
@@ -390,7 +442,13 @@ def get_stage_remote_functions(runtime_profile: str = DEFAULT_RUNTIME_PROFILE):
         return train_stage1_remote, train_stage2_remote
     if runtime_profile == A100_PROBE_PROFILE:
         return train_stage1_a100_probe_remote, train_stage2_a100_probe_remote
-    return train_stage1_a100_compat_remote, train_stage2_a100_compat_remote
+    if runtime_profile == A100_COMPAT_PROFILE:
+        return train_stage1_a100_compat_remote, train_stage2_a100_compat_remote
+    if runtime_profile == H100_STABLE_PROFILE:
+        return train_stage1_h100_stable_remote, train_stage2_h100_stable_remote
+    if runtime_profile == H100_PROBE_PROFILE:
+        return train_stage1_h100_probe_remote, train_stage2_h100_probe_remote
+    return train_stage1_h100_compat_remote, train_stage2_h100_compat_remote
 
 
 def run_requested_stages(
@@ -528,6 +586,90 @@ def train_stage2_a100_compat_remote(run_name: str, seed: int = 0, extra_args: tu
     _run_stage(2, run_name, seed=seed, extra_args=extra_args)
 
 
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[H100_STABLE_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[H100_STABLE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[H100_STABLE_PROFILE].function_env,
+))
+def train_stage1_h100_stable_remote(run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()):
+    """Stage 1 on the validated H100 stable path."""
+    emit_runtime_diagnostics(H100_STABLE_PROFILE)
+    _run_stage(1, run_name, seed=seed, extra_args=extra_args)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[H100_STABLE_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[H100_STABLE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[H100_STABLE_PROFILE].function_env,
+))
+def train_stage2_h100_stable_remote(run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()):
+    """Stage 2 on the validated H100 stable path."""
+    emit_runtime_diagnostics(H100_STABLE_PROFILE)
+    _run_stage(2, run_name, seed=seed, extra_args=extra_args)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[H100_PROBE_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[H100_PROBE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[H100_PROBE_PROFILE].function_env,
+))
+def train_stage1_h100_probe_remote(run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()):
+    """Stage 1 on the current image with an explicit H100 for diagnostics."""
+    emit_runtime_diagnostics(H100_PROBE_PROFILE)
+    _run_stage(1, run_name, seed=seed, extra_args=extra_args)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[H100_PROBE_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[H100_PROBE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[H100_PROBE_PROFILE].function_env,
+))
+def train_stage2_h100_probe_remote(run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()):
+    """Stage 2 on the current image with an explicit H100 for diagnostics."""
+    emit_runtime_diagnostics(H100_PROBE_PROFILE)
+    _run_stage(2, run_name, seed=seed, extra_args=extra_args)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[H100_COMPAT_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[H100_COMPAT_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[H100_COMPAT_PROFILE].function_env,
+))
+def train_stage1_h100_compat_remote(run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()):
+    """Stage 1 on the alternate H100 compatibility image."""
+    emit_runtime_diagnostics(H100_COMPAT_PROFILE)
+    _run_stage(1, run_name, seed=seed, extra_args=extra_args)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[H100_COMPAT_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[H100_COMPAT_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[H100_COMPAT_PROFILE].function_env,
+))
+def train_stage2_h100_compat_remote(run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()):
+    """Stage 2 on the alternate H100 compatibility image."""
+    emit_runtime_diagnostics(H100_COMPAT_PROFILE)
+    _run_stage(2, run_name, seed=seed, extra_args=extra_args)
+
+
 @app.local_entrypoint()
 def main(
     run_name: str,
@@ -544,7 +686,7 @@ def main(
         seed: Random seed (default: 0).
         stage: Which stage to train — "1", "2", or "both" (default).
         overrides: Extra Hydra overrides passed to train.py.
-        runtime_profile: Modal runtime profile. One of t4_stable, a100_probe, a100_compat.
+        runtime_profile: Modal runtime profile. One of t4_stable, a100_probe, a100_compat, h100_stable, h100_probe, h100_compat.
     """
     run_requested_stages(
         run_name,

@@ -15,17 +15,31 @@ def test_modal_train_module_exports_expected_entrypoints():
     assert hasattr(modal_train.train_stage2_a100_probe_remote, "remote")
     assert hasattr(modal_train.train_stage1_a100_compat_remote, "remote")
     assert hasattr(modal_train.train_stage2_a100_compat_remote, "remote")
+    assert hasattr(modal_train.train_stage1_h100_stable_remote, "remote")
+    assert hasattr(modal_train.train_stage2_h100_stable_remote, "remote")
+    assert hasattr(modal_train.train_stage1_h100_probe_remote, "remote")
+    assert hasattr(modal_train.train_stage2_h100_probe_remote, "remote")
+    assert hasattr(modal_train.train_stage1_h100_compat_remote, "remote")
+    assert hasattr(modal_train.train_stage2_h100_compat_remote, "remote")
 
 
 def test_runtime_profiles_are_explicit_and_validated():
     t4_profile = modal_train.get_runtime_profile(modal_train.T4_STABLE_PROFILE)
     a100_probe = modal_train.get_runtime_profile(modal_train.A100_PROBE_PROFILE)
     a100_compat = modal_train.get_runtime_profile(modal_train.A100_COMPAT_PROFILE)
+    h100_stable = modal_train.get_runtime_profile(modal_train.H100_STABLE_PROFILE)
+    h100_probe = modal_train.get_runtime_profile(modal_train.H100_PROBE_PROFILE)
+    h100_compat = modal_train.get_runtime_profile(modal_train.H100_COMPAT_PROFILE)
 
     assert t4_profile.gpu == modal_train.T4_GPU
     assert a100_probe.gpu == modal_train.A100_PROBE_GPU
     assert a100_probe.function_env["CUDA_LAUNCH_BLOCKING"] == "1"
     assert a100_compat.gpu == modal_train.A100_COMPAT_GPU
+    assert h100_stable.gpu == modal_train.H100_STABLE_GPU
+    assert "CUDA_LAUNCH_BLOCKING" not in h100_stable.function_env
+    assert h100_probe.gpu == modal_train.H100_PROBE_GPU
+    assert h100_probe.function_env["CUDA_LAUNCH_BLOCKING"] == "1"
+    assert h100_compat.gpu == modal_train.H100_COMPAT_GPU
 
     with pytest.raises(ValueError):
         modal_train.get_runtime_profile("bogus")
@@ -186,6 +200,33 @@ def test_run_requested_stages_uses_selected_a100_profile(monkeypatch):
     assert calls == [
         ("probe-stage1", "demo", 9, ("train.ppo.max_agent_steps=1024",)),
         ("probe-stage2", "demo", 9, ("train.ppo.max_agent_steps=1024",)),
+    ]
+
+
+def test_run_requested_stages_uses_selected_h100_profile(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        modal_train,
+        "train_stage1_h100_stable_remote",
+        SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("h100-stable-stage1", run_name, seed, extra_args))),
+    )
+    monkeypatch.setattr(
+        modal_train,
+        "train_stage2_h100_stable_remote",
+        SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("h100-stable-stage2", run_name, seed, extra_args))),
+    )
+
+    modal_train.run_requested_stages(
+        "demo",
+        seed=4,
+        stage="both",
+        extra_args=("train.ppo.max_agent_steps=1024",),
+        runtime_profile=modal_train.H100_STABLE_PROFILE,
+    )
+
+    assert calls == [
+        ("h100-stable-stage1", "demo", 4, ("train.ppo.max_agent_steps=1024",)),
+        ("h100-stable-stage2", "demo", 4, ("train.ppo.max_agent_steps=1024",)),
     ]
 
 
