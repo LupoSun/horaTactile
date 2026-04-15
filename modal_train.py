@@ -12,6 +12,9 @@ Usage:
     modal run modal_train.py --run-name my_exp --stage 1
     modal run modal_train.py --run-name my_exp --stage 2
 
+    # Train baseline stage 1 + tactile stage 2
+    modal run modal_train.py --run-name my_exp --runtime-profile h100_stable --tactile
+
     # Select an explicit runtime profile
     modal run modal_train.py --run-name my_exp --runtime-profile h100_stable --stage 1
     modal run modal_train.py --run-name my_exp --runtime-profile a100_probe --stage 1
@@ -286,6 +289,14 @@ def parse_overrides(overrides: str) -> tuple[str, ...]:
     return tuple(shlex.split(stripped))
 
 
+def with_stage2_tactile_override(extra_args: tuple[str, ...], tactile: bool = False) -> tuple[str, ...]:
+    if not tactile:
+        return extra_args
+    if any(arg.startswith("task.env.hora.useTactile=") for arg in extra_args):
+        return extra_args
+    return (*extra_args, "task.env.hora.useTactile=True")
+
+
 def expected_cache_files(config_path: Path = TASK_CONFIG_PATH) -> tuple[str, ...]:
     task_config = OmegaConf.load(config_path)
     cache_name = task_config.env.grasp_cache_name
@@ -350,7 +361,12 @@ def build_stage1_command(run_name: str, seed: int = 0, extra_args: tuple[str, ..
     ]
 
 
-def build_stage2_command(run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()) -> list[str]:
+def build_stage2_command(
+    run_name: str,
+    seed: int = 0,
+    extra_args: tuple[str, ...] = (),
+    tactile: bool = False,
+) -> list[str]:
     return [
         CONDA_PYTHON, "train.py",
         f"task={DEFAULT_TASK_NAME}", "headless=True",
@@ -362,7 +378,7 @@ def build_stage2_command(run_name: str, seed: int = 0, extra_args: tuple[str, ..
         "train.ppo.priv_info=True", "train.ppo.proprio_adapt=True",
         f"train.ppo.output_name={get_output_name(run_name)}",
         f"checkpoint={get_stage_best_checkpoint_relpath(get_output_name(run_name), 1)}",
-        *extra_args,
+        *with_stage2_tactile_override(extra_args, tactile=tactile),
     ]
 
 
@@ -422,7 +438,7 @@ def _run_with_periodic_commits(cmd: list[str]):
         raise subprocess.CalledProcessError(returncode, cmd)
 
 
-def _run_stage(stage: int, run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()):
+def _run_stage(stage: int, run_name: str, seed: int = 0, extra_args: tuple[str, ...] = (), tactile: bool = False):
     setup_project_symlinks()
     if stage == 1:
         check_no_overwrite(run_name, stage=1)
@@ -430,7 +446,7 @@ def _run_stage(stage: int, run_name: str, seed: int = 0, extra_args: tuple[str, 
     elif stage == 2:
         check_stage1_exists(run_name)
         check_no_overwrite(run_name, stage=2)
-        cmd = build_stage2_command(run_name, seed=seed, extra_args=extra_args)
+        cmd = build_stage2_command(run_name, seed=seed, extra_args=extra_args, tactile=tactile)
     else:
         raise ValueError(f"Unsupported stage: {stage}")
     _run_with_periodic_commits(cmd)
@@ -457,6 +473,7 @@ def run_requested_stages(
     stage: str = "both",
     extra_args: tuple[str, ...] = (),
     runtime_profile: str = DEFAULT_RUNTIME_PROFILE,
+    tactile: bool = False,
 ):
     if stage not in ("1", "2", "both"):
         raise ValueError(f"Unsupported stage selection: {stage}")
@@ -469,7 +486,7 @@ def run_requested_stages(
 
     if stage in ("2", "both"):
         print(f"[hora] Starting stage 2 training: {run_name} [{profile.name}]")
-        stage2_remote.remote(run_name, seed, extra_args)
+        stage2_remote.remote(run_name, seed, with_stage2_tactile_override(extra_args, tactile=tactile))
 
     print(f"[hora] Done. Outputs on volume at /vol/outputs/{get_output_name(run_name)}/")
 
@@ -677,6 +694,7 @@ def main(
     stage: str = "both",
     overrides: str = "",
     runtime_profile: str = DEFAULT_RUNTIME_PROFILE,
+    tactile: bool = False,
 ):
     """
     Train HORA on Modal.
@@ -687,6 +705,7 @@ def main(
         stage: Which stage to train — "1", "2", or "both" (default).
         overrides: Extra Hydra overrides passed to train.py.
         runtime_profile: Modal runtime profile. One of t4_stable, a100_probe, a100_compat, h100_stable, h100_probe, h100_compat.
+        tactile: When true, append task.env.hora.useTactile=True to stage 2 only.
     """
     run_requested_stages(
         run_name,
@@ -694,4 +713,5 @@ def main(
         stage=stage,
         extra_args=parse_overrides(overrides),
         runtime_profile=runtime_profile,
+        tactile=tactile,
     )

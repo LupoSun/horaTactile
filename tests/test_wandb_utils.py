@@ -17,6 +17,7 @@ class DummyEnv:
             dtype=np.float32,
         )
         self.prop_hist_len = 4
+        self.hist_obs_dim = 32
 
 
 class DummyModel(torch.nn.Module):
@@ -159,3 +160,62 @@ def test_proprio_adapt_initializes_wandb_with_stage2_group(monkeypatch, tmp_path
     assert name == "AllegroHandHora/test_run"
     assert group == "stage2"
     assert agent.max_agent_steps == 1024
+
+
+def test_proprio_adapt_uses_env_hist_obs_dim(monkeypatch, tmp_path):
+    env = DummyEnv()
+    env.hist_obs_dim = 44
+    init_calls = []
+    rms_inputs = []
+
+    monkeypatch.setattr(
+        padapt_module,
+        "ActorCritic",
+        lambda net_config: init_calls.append(net_config) or DummyModel(),
+    )
+
+    class CapturingRunningMeanStd(DummyRunningMeanStd):
+        def __init__(self, insize, *_args, **_kwargs):
+            super().__init__()
+            rms_inputs.append(insize)
+
+    monkeypatch.setattr(padapt_module, "RunningMeanStd", CapturingRunningMeanStd)
+    monkeypatch.setattr(
+        padapt_module,
+        "init_wandb_run",
+        lambda full_config, name, group: None,
+    )
+
+    padapt_module.ProprioAdapt(env, str(tmp_path), make_full_config(proprio_adapt=True))
+
+    assert init_calls[0]["hist_obs_dim"] == 44
+    assert (env.prop_hist_len, 44) in rms_inputs
+
+
+def test_proprio_adapt_tconv_supports_tactile_history_width():
+    model = padapt_module.ActorCritic(
+        {
+            "actor_units": [8, 4],
+            "priv_mlp_units": [4, 8],
+            "actions_num": 2,
+            "input_shape": (3,),
+            "priv_info": True,
+            "proprio_adapt": True,
+            "priv_info_dim": 9,
+            "hist_obs_dim": 44,
+        }
+    )
+
+    mu, logstd, value, extrin, extrin_gt = model._actor_critic(
+        {
+            "obs": torch.randn(2, 3),
+            "priv_info": torch.randn(2, 9),
+            "proprio_hist": torch.randn(2, 30, 44),
+        }
+    )
+
+    assert mu.shape == (2, 2)
+    assert logstd.shape == (2, 2)
+    assert value.shape == (2, 1)
+    assert extrin.shape == (2, 8)
+    assert extrin_gt.shape == (2, 8)
