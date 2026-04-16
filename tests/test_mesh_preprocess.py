@@ -55,3 +55,26 @@ def test_process_mesh_scales_exported_assets_but_keeps_pointclouds_normalized(tm
     expected_radius = np.linalg.norm(np.array([0.5, 1.0, 2.0], dtype=np.float64))
     expected_normalised_bbox = (np.array([1.0, 2.0, 4.0], dtype=np.float64) / expected_radius).tolist()
     assert metadata["normalised_bbox"] == pytest.approx(expected_normalised_bbox, abs=1e-6)
+
+
+def test_process_mesh_can_export_original_units_with_scale_conversion(tmp_path):
+    input_mesh = trimesh.creation.box(extents=(100.0, 200.0, 400.0))
+    input_path = tmp_path / "box.obj"
+    input_mesh.export(input_path)
+
+    obj_dir = process_mesh(
+        mesh_path=input_path,
+        output_dir=tmp_path / "assets",
+        point_counts=[16],
+        skip_decomposition=True,
+        mass=0.05,
+        export_unit_scale=0.001,
+    )
+
+    visual_mesh = trimesh.load(obj_dir / "visual.obj", force="mesh")
+    visual_extents = np.asarray(visual_mesh.bounding_box.extents, dtype=np.float64)
+    metadata = json.loads((obj_dir / "metadata.json").read_text())
+
+    assert visual_extents.tolist() == pytest.approx([0.1, 0.2, 0.4], abs=1e-6)
+    assert metadata["source_unit_scale"] == pytest.approx(0.001)
+    assert metadata["export_bbox"] == pytest.approx([0.1, 0.2, 0.4], abs=1e-6)

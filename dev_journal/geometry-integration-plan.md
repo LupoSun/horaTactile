@@ -1,5 +1,26 @@
 # Geometry Integration Plan — Custom Rhino Meshes
 
+## Status Note
+
+Parts of this original plan are now implemented.
+
+Implemented:
+- the mesh preprocessing pipeline in [`tools/mesh/preprocess.py`](/home/lupo/horaTactile/tools/mesh/preprocess.py)
+- bbox-based mesh scaling in [`tools/mesh/scale_by_bbox.py`](/home/lupo/horaTactile/tools/mesh/scale_by_bbox.py)
+- source-unit conversion for exported sim meshes through `--export-unit-scale`
+- custom-object asset discovery in [`hora/utils/object_assets.py`](/home/lupo/horaTactile/hora/utils/object_assets.py)
+- HORA-side custom object loading in [`hora/tasks/allegro_hand_hora.py`](/home/lupo/horaTactile/hora/tasks/allegro_hand_hora.py)
+- Stage 2 custom-object playback in [`scripts/vis_object_s2.sh`](/home/lupo/horaTactile/scripts/vis_object_s2.sh)
+
+Still planned / not implemented:
+- geometry-aware privileged information with a PointNet-style encoder
+- true RotateIt-style oracle training
+- visuotactile Stage 2 architecture
+
+This document remains the research/planning note. For the implemented pipeline and the first BTG_13 asset/playback experiment, see:
+- [`2026-03-31-mesh-preprocessing-tool.md`](/home/lupo/horaTactile/dev_journal/2026-03-31-mesh-preprocessing-tool.md)
+- [`2026-04-15-btg13-custom-object-visualization.md`](/home/lupo/horaTactile/dev_journal/2026-04-15-btg13-custom-object-visualization.md)
+
 ## Context
 
 This project benchmarks in-hand object rotation on custom-shaped objects modeled in Rhino.
@@ -114,7 +135,7 @@ assets/custom/
     metadata.json        ← bounding box, volume, surface area, canonical scale
 ```
 
-### Script: `scripts/preprocess_mesh.py`
+### Script: `tools/mesh/preprocess.py`
 
 **Steps per mesh:**
 
@@ -122,6 +143,10 @@ assets/custom/
    - Remove duplicate vertices, fix winding, fill small holes
    - Centre at origin (subtract centroid)
    - Normalise to unit bounding sphere (divide by max radius) — store scale factor in `metadata.json`
+
+   The current implementation also supports:
+   - source-unit conversion for exported sim meshes, e.g. `--export-unit-scale 0.001` for mm -> m
+   - optional bbox-target scaling for exported sim meshes while keeping point clouds unit-normalised
 
 2. **Convex decomposition** for collision
    - Run **V-HACD** (`pybullet.vhacd` or `coacd`) to generate `collision.obj`
@@ -163,9 +188,9 @@ assets/custom/
 
 ### CLI usage
 ```bash
-python scripts/preprocess_mesh.py assets/custom/raw/my_shape.obj
+python tools/mesh/preprocess.py assets/custom/raw/my_shape.obj
 # or batch:
-python scripts/preprocess_mesh.py assets/custom/raw/*.obj
+python tools/mesh/preprocess.py assets/custom/raw/*.obj
 ```
 
 ### New dependencies to add to `requirements.txt`
@@ -180,21 +205,45 @@ coacd          # convex decomposition (pip install coacd)
 ## Part 2 — Path A: Cylinder-trained policy, Rhino objects at eval
 
 ### What changes
-Only evaluation / config — **no model changes**.
+Only evaluation / asset loading — **no model changes**.
 
-#### Config additions (`configs/task/AllegroHandHora.yaml`)
-Add a new object type resolver so training scripts can reference custom objects:
-```yaml
-object:
-  type: 'custom'          # new type string
-  customDir: 'assets/custom'
+#### What is implemented now
+Custom assets are now discovered through:
+
+- [`hora/utils/object_assets.py`](/home/lupo/horaTactile/hora/utils/object_assets.py)
+
+and consumed in:
+
+- [`hora/tasks/allegro_hand_hora.py`](/home/lupo/horaTactile/hora/tasks/allegro_hand_hora.py)
+
+The current selector format is:
+
+```text
+task.env.object.type=custom_<subset>
 ```
 
-#### Code change (`hora/tasks/allegro_hand_hora.py` — `_setup_object_info()`)
-Add a branch for `'custom'` type that globs `assets/custom/*/` for URDF files, analogous to the existing `'cuboid'` / `'cylinder'` glob logic.
+where assets are loaded from:
 
-#### Eval scripts
-New `scripts/eval_custom.sh` — mirrors `eval_s2.sh` but sets `task.env.object.type=custom`.
+```text
+assets/custom/<subset>/*.urdf
+assets/custom/<subset>/*/*.urdf
+```
+
+#### Current playback script
+
+- [`scripts/vis_object_s2.sh`](/home/lupo/horaTactile/scripts/vis_object_s2.sh)
+
+Example:
+
+```bash
+bash scripts/vis_object_s2.sh hora_v0.0.2 custom_btg13_mean
+```
+
+#### What still needs to be added
+
+- a matching Stage 1 custom-object playback helper
+- a dedicated eval script that batches over custom subsets
+- benchmark bookkeeping around which subset and size convention is being used
 
 ### What you learn
 Whether tactile + proprioceptive adaptation (Stage 2) generalises from cylinders to arbitrary geometries **without** ever seeing those geometries during training. This is the core scientific question of `horaTactile`.
@@ -278,29 +327,30 @@ The config field `ppo.priv_info_dim` is threaded through `net_config` into the m
 
 | File | Purpose |
 |---|---|
-| `scripts/preprocess_mesh.py` | Rhino mesh → URDF + point clouds + metadata |
+| `tools/mesh/preprocess.py` | Rhino mesh → URDF + point clouds + metadata |
 | `assets/custom/` | Output directory for processed custom objects |
-| `scripts/eval_custom.sh` | Evaluate Stage 2 policy on custom objects (Path A) |
+| `scripts/vis_object_s2.sh` | Visualize Stage 2 policy on custom objects (Path A) |
 
 ## Modified files
 
 | File | Change |
 |---|---|
-| `hora/tasks/allegro_hand_hora.py` | Custom object type loading; point cloud buffer; extended priv_info |
-| `hora/algo/models/models.py` | Add PointNetEncoder; integrate into ActorCritic |
-| `configs/task/AllegroHandHora.yaml` | Add `customDir`, extended randomization fields |
-| `configs/train/AllegroHandHora.yaml` | Update `priv_info_dim`, add `pointnet` config block |
+| `hora/tasks/allegro_hand_hora.py` | Custom object type loading |
+| `hora/utils/object_assets.py` | Primitive/custom asset discovery |
+| `tools/mesh/preprocess.py` | Preprocessing, source-unit conversion, bbox-target scaling |
+| `scripts/vis_object_s2.sh` | Custom-object Stage 2 playback |
 | `requirements.txt` | Add `trimesh`, `coacd` |
 
 ---
 
 ## Suggested implementation order
 
-1. `scripts/preprocess_mesh.py` — self-contained, can be built and tested immediately with one Rhino mesh
-2. Path A config + `_setup_object_info()` change — lets you run eval on custom objects with the existing trained policy right away
-3. Path B model changes (`PointNetEncoder`) — after Path A is validated
-4. Path B env changes (point cloud buffer in obs_dict) — alongside model changes
-5. Retrain Stage 1 with geometry-aware priv info on mixed cylinder + custom object set
+1. Completed: `tools/mesh/preprocess.py`
+2. Completed: Path A asset discovery + custom object loading
+3. Completed: local Stage 2 playback on custom objects
+4. Next: Path B model changes (`PointNetEncoder`)
+5. Next: Path B env changes (point cloud buffer in `obs_dict`)
+6. Next: retrain Stage 1 with geometry-aware priv info on mixed cylinder + custom object set
 
 ---
 

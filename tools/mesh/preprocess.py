@@ -149,6 +149,8 @@ def normalise_to_unit_sphere(mesh: trimesh.Trimesh) -> tuple[trimesh.Trimesh, fl
 
 def prepare_export_mesh(
     normalised_mesh: trimesh.Trimesh,
+    canonical_scale_factor: float,
+    export_unit_scale: float = 1.0,
     target_bbox_size: float | None = None,
     target_bbox_axis: str = "max",
 ) -> tuple[trimesh.Trimesh, float, np.ndarray]:
@@ -159,8 +161,9 @@ def prepare_export_mesh(
     optionally be scaled uniformly so a chosen bbox dimension matches a target size.
     """
     export_mesh = normalised_mesh.copy()
+    export_mesh.vertices *= canonical_scale_factor * export_unit_scale
     export_bbox = np.asarray(export_mesh.bounding_box.extents, dtype=np.float64)
-    export_scale_factor = 1.0
+    export_scale_factor = canonical_scale_factor * export_unit_scale
 
     if target_bbox_size is not None:
         export_mesh, export_scale_factor, _, export_bbox = scale_mesh_by_bbox(
@@ -168,6 +171,7 @@ def prepare_export_mesh(
             target_size=target_bbox_size,
             axis=target_bbox_axis,
         )
+        export_scale_factor *= canonical_scale_factor * export_unit_scale
 
     return export_mesh, float(export_scale_factor), np.asarray(export_bbox, dtype=np.float64)
 
@@ -336,6 +340,7 @@ def process_mesh(
     point_counts: list[int],
     skip_decomposition: bool = False,
     mass: float = DEFAULT_MASS,
+    export_unit_scale: float = 1.0,
     target_bbox_size: float | None = None,
     target_bbox_axis: str = "max",
 ) -> Path:
@@ -366,6 +371,8 @@ def process_mesh(
     # in the normalised coordinate frame above.
     export_mesh, export_bbox_scale_factor, export_bbox = prepare_export_mesh(
         mesh,
+        canonical_scale_factor=scale_factor,
+        export_unit_scale=export_unit_scale,
         target_bbox_size=target_bbox_size,
         target_bbox_axis=target_bbox_axis,
     )
@@ -425,6 +432,7 @@ def process_mesh(
         "name": name,
         "source_file": mesh_path.name,
         "canonical_scale_factor": float(scale_factor),
+        "source_unit_scale": float(export_unit_scale),
         "centroid_offset": centroid.tolist(),
         "original_bbox": original_bounds,
         "normalised_bbox": normalised_bbox.tolist(),
@@ -494,6 +502,12 @@ def main():
         help=f"Object mass in kg (default: {DEFAULT_MASS})",
     )
     parser.add_argument(
+        "--export-unit-scale",
+        type=float,
+        default=1.0,
+        help="Multiply exported sim meshes by this factor before optional bbox scaling (e.g. 0.001 for mm->m)",
+    )
+    parser.add_argument(
         "--target-bbox-size",
         type=float,
         help="Uniformly scale exported meshes so the selected bbox extent matches this size",
@@ -531,6 +545,7 @@ def main():
                 point_counts=args.n_points,
                 skip_decomposition=args.skip_decomposition,
                 mass=args.mass,
+                export_unit_scale=args.export_unit_scale,
                 target_bbox_size=args.target_bbox_size,
                 target_bbox_axis=args.target_bbox_axis,
             )
