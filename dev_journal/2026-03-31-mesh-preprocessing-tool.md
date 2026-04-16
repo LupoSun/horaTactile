@@ -6,9 +6,11 @@ This entry now combines:
 - the **implemented** mesh preprocessing work
 - the **paper-grounded integration plan** for how those assets plug into HORA-style and RotateIt-style training
 
-Only the preprocessing tool itself is implemented today.
+The preprocessing tool itself is implemented, and a first slice of downstream integration is now implemented too:
+- custom asset bundles can be discovered by the HORA task
+- custom objects can be visualized with the existing policy checkpoints
 
-The downstream integration work is **not** done yet, and this note now reflects that explicitly instead of mixing finished and planned work together.
+The geometry-aware oracle path is still future work, and this note now separates finished work from the remaining research extensions.
 
 ## What Was Built
 
@@ -20,6 +22,11 @@ This is not something HORA shipped with. It was added here specifically for the 
 - the existing repo only uses simple simulation assets such as cylinders and cuboids
 - there was no mesh ingestion pipeline for Rhino-modeled objects
 - there was no automatic way to generate both physics assets and PointNet-ready point clouds from the same source mesh
+
+The repo now also includes the first integration layer on top of that preprocessing:
+- [`hora/utils/object_assets.py`](/home/lupo/horaTactile/hora/utils/object_assets.py) for primitive/custom asset discovery
+- custom-object loading wired into [`allegro_hand_hora.py`](/home/lupo/horaTactile/hora/tasks/allegro_hand_hora.py)
+- [`scripts/vis_object_s2.sh`](/home/lupo/horaTactile/scripts/vis_object_s2.sh) for Stage 2 playback on arbitrary object types
 
 ## Why This Matters
 
@@ -110,13 +117,14 @@ Per mesh:
    - `coacd` if available
    - otherwise trimesh convex decomposition
    - otherwise convex hull fallback
-8. Optionally scale the exported simulation mesh so a chosen bbox extent matches a target size
-9. Compute inertia:
+8. Optionally apply a source-unit conversion to the exported simulation mesh, e.g. mm -> m
+9. Optionally scale the exported simulation mesh so a chosen bbox extent matches a target size
+10. Compute inertia:
    - exact from volume if watertight
    - bounding-box approximation otherwise
-10. Generate a URDF with mesh paths relative to the generated object folder
-11. Sample surface point clouds and save them as `.npy`
-12. Save metadata for downstream simulation/debugging
+11. Generate a URDF with mesh paths relative to the generated object folder
+12. Sample surface point clouds and save them as `.npy`
+13. Save metadata for downstream simulation/debugging
 
 ### Output conventions
 
@@ -130,6 +138,7 @@ That means:
 This is appropriate for future PointNet-style shape encoding, because the point clouds represent shape independent of world pose.
 
 The exported simulation meshes can now optionally use a different scale:
+- `visual.obj` / `collision.obj` can first be multiplied by a source-unit conversion such as `0.001` for mm -> m
 - `visual.obj` / `collision.obj` can be uniformly scaled so a bbox extent matches a requested target size
 - the point clouds still remain in normalized unit-sphere space
 
@@ -141,6 +150,7 @@ This split is intentional:
 
 The tool currently saves:
 - `canonical_scale_factor`
+- `source_unit_scale`
 - `centroid_offset`
 - original and normalized bounding boxes
 - export bounding box after optional scaling
@@ -180,6 +190,9 @@ python tools/mesh/preprocess.py shape.obj --mass 0.05
 # Uniformly scale exported meshes so the longest bbox edge is 8 cm
 python tools/mesh/preprocess.py shape.obj --target-bbox-size 0.08
 
+# Convert source millimeters to meters before exporting simulation meshes
+python tools/mesh/preprocess.py shape.obj --export-unit-scale 0.001
+
 # Or match a specific axis
 python tools/mesh/preprocess.py shape.obj --target-bbox-size 0.05 --target-bbox-axis z
 
@@ -216,17 +229,18 @@ The tool can handle non-watertight geometry, but inertia becomes approximate in 
 - point clouds are generated
 - metadata is generated
 - exported visual/collision meshes can be uniformly bbox-scaled without changing normalized point-cloud outputs
+- exported visual/collision meshes can preserve source physical size with `--export-unit-scale`
+- custom bundles under `assets/custom/` can now be discovered by the HORA task through `task.env.object.type=custom_<subset>`
+- Stage 2 playback on custom objects is supported through `scripts/vis_object_s2.sh`
 
 ### Not implemented yet
 
-- no `custom` object branch is wired into the HORA task config / asset loading path
-- no eval script yet loads `assets/custom/*/` automatically
 - no PointNet encoder exists in the actor-critic model
 - no point cloud is currently fed into privileged info
 - `configs/train/AllegroHandHora.yaml` still uses `priv_info_dim: 9`
 - the current training code is still HORA-style, not RotateIt-style
 
-So the preprocessing step is done, but the benchmark paths that consume those assets are still future work.
+So the preprocessing step is done, and the first HORA-side consumption path is done for local playback/eval. The geometry-aware training path is still future work.
 
 ## Next Integration Work
 
@@ -238,10 +252,18 @@ Goal:
 - keep training exactly as HORA does now
 - evaluate on custom Rhino meshes without giving the policy explicit geometry
 
-What still needs to be added:
-- a new custom object type in task config, e.g. `task.env.object.type=custom`
-- task-side asset discovery for `assets/custom/*/*.urdf`
-- an eval script that points the environment at those generated URDFs
+What is now already in place:
+- task-side asset discovery for:
+  - `assets/custom/<subset>/*.urdf`
+  - `assets/custom/<subset>/*/*.urdf`
+- custom object selection via `task.env.object.type=custom_<subset>`
+- a Stage 2 visualization entry point:
+  - [`scripts/vis_object_s2.sh`](/home/lupo/horaTactile/scripts/vis_object_s2.sh)
+
+What still needs to be added for a cleaner benchmark workflow:
+- a Stage 1 custom-object visualization helper for symmetry with Stage 2
+- a dedicated eval script that batches over generated custom assets
+- clearer config documentation for selecting custom subsets
 
 What should stay unchanged for Path A:
 - Stage 1 algorithm
@@ -315,9 +337,33 @@ The mesh tooling was validated locally after installing `trimesh` into the proje
 Test coverage now includes:
 - pure bbox scaling math
 - an end-to-end preprocess-path test on a synthetic mesh
+- source-unit conversion for exported simulation meshes
+- custom asset discovery for nested `assets/custom/` bundles
 - verification that:
   - exported meshes respect the requested bbox target size
   - point clouds remain in unit-sphere space
+
+## First End-to-End Custom Object Check
+
+The first concrete custom-object check used:
+
+- [`Nodes/BTG_13.stl`](/home/lupo/horaTactile/Nodes/BTG_13.stl)
+
+Two asset variants were generated:
+- original physical size after mm -> m conversion:
+  - [`assets/custom/btg13_original/BTG_13`](/home/lupo/horaTactile/assets/custom/btg13_original/BTG_13)
+- benchmark-sized version matching the mean longest edge of the 90 default demo objects:
+  - [`assets/custom/btg13_mean/BTG_13`](/home/lupo/horaTactile/assets/custom/btg13_mean/BTG_13)
+
+The benchmark mean longest edge used for scaling was:
+
+```text
+0.0871111111111111 m
+```
+
+That experiment is documented separately here:
+
+- [`2026-04-15-btg13-custom-object-visualization.md`](/home/lupo/horaTactile/dev_journal/2026-04-15-btg13-custom-object-visualization.md)
   - metadata records both normalization-space and export-space sizing
 
 While testing, two implementation fixes were needed:
