@@ -30,7 +30,13 @@ class AllegroHandHora(VecTask):
         self._setup_object_info(config['env']['object'])
         # 4. setup reward
         self._setup_reward_config(config['env']['reward'])
-        self.use_tactile = config['env']['hora'].get('useTactile', False)
+        hora_config = config['env']['hora']
+        self.use_tactile_obs = hora_config.get('useTactileObs', False)
+        self.use_tactile_hist = hora_config.get('useTactileHist', hora_config.get('useTactile', False))
+        self.use_tactile = self.use_tactile_obs or self.use_tactile_hist
+        # Keep observation dimensionality aligned with the selected tactile mode so
+        # released tactile checkpoints can be loaded without manual config surgery.
+        self.config['env']['numObservations'] = 132 if self.use_tactile_obs else 96
         self.base_obj_scale = config['env']['baseObjScale']
         self.save_init_pose = config['env']['genGrasps']
         self.aggregate_mode = self.config['env']['aggregateMode']
@@ -97,13 +103,23 @@ class AllegroHandHora(VecTask):
         self.rb_forces = torch.zeros((self.num_envs, self.num_bodies, 3), dtype=torch.float, device=self.device)
 
         if self.randomize_scale and self.scale_list_init:
+            self.reset_grasp_scale_list = list(self.randomize_scale_list)
             self.saved_grasping_states = {}
-            for s in self.randomize_scale_list:
+            for s in self.reset_grasp_scale_list:
                 self.saved_grasping_states[str(s)] = torch.from_numpy(np.load(
                     f'cache/{self.grasp_cache_name}_grasp_50k_s{str(s).replace(".", "")}.npy'
                 )).float().to(self.device)
         else:
-            assert self.save_init_pose
+            self.reset_grasp_scale_list = [self.grasp_init_scale]
+            if not self.save_init_pose:
+                init_scale = self.reset_grasp_scale_list[0]
+                self.saved_grasping_states = {
+                    str(init_scale): torch.from_numpy(np.load(
+                        f'cache/{self.grasp_cache_name}_grasp_50k_s{str(init_scale).replace(".", "")}.npy'
+                    )).float().to(self.device)
+                }
+            else:
+                self.saved_grasping_states = {}
 
         self.rot_axis_buf = torch.zeros((self.num_envs, 3), device=self.device, dtype=torch.float)
 
@@ -126,7 +142,7 @@ class AllegroHandHora(VecTask):
         self.stat_sum_obj_linvel = 0
         self.stat_sum_torques = 0
         self.env_evaluated = 0
-        self.max_evaluate_envs = 500000
+        self.max_evaluate_envs = int(self.config.get('maxEvaluateEnvs', 500000))
 
     def _create_envs(self, num_envs, spacing, num_per_row):
         self._create_ground_plane()
@@ -268,12 +284,12 @@ class AllegroHandHora(VecTask):
         # reset rigid body forces
         self.rb_forces[env_ids, :, :] = 0.0
 
-        num_scales = len(self.randomize_scale_list)
+        num_scales = len(self.reset_grasp_scale_list)
         for n_s in range(num_scales):
             s_ids = env_ids[(env_ids % num_scales == n_s).nonzero(as_tuple=False).squeeze(-1)]
             if len(s_ids) == 0:
                 continue
-            obj_scale = self.randomize_scale_list[n_s]
+            obj_scale = self.reset_grasp_scale_list[n_s]
             scale_key = str(obj_scale)
             sampled_pose_idx = np.random.randint(self.saved_grasping_states[scale_key].shape[0], size=len(s_ids))
             sampled_pose = self.saved_grasping_states[scale_key][sampled_pose_idx].clone()
@@ -295,10 +311,12 @@ class AllegroHandHora(VecTask):
 
         self.progress_buf[env_ids] = 0
         self.obs_buf[env_ids] = 0
+        if self.use_tactile_obs:
+            self.obs_buf_lag_history[env_ids, :, 32:] = 0
         self.rb_forces[env_ids] = 0
         self.priv_info_buf[env_ids, 0:3] = 0
         self.proprio_hist_buf[env_ids] = 0
-        if self.use_tactile:
+        if self.use_tactile_hist:
             self.tactile_hist_buf[env_ids] = 0
         self.at_reset_buf[env_ids] = 1
 
@@ -312,6 +330,13 @@ class AllegroHandHora(VecTask):
         ).clone().unsqueeze(1)
         cur_tar_buf = self.cur_targets[:, None]
         cur_obs_buf = torch.cat([cur_obs_buf, cur_tar_buf], dim=-1)
+        cur_tactile_buf = None
+        if self.use_tactile:
+            cur_forces = self.contact_forces[:, self.fingertip_indices, :].reshape(self.num_envs, -1)
+            cur_tactile_buf = torch.clamp(cur_forces / 10.0, -1.0, 1.0)
+        if self.use_tactile_obs:
+            assert cur_tactile_buf is not None
+            cur_obs_buf = torch.cat([cur_obs_buf, cur_tactile_buf.unsqueeze(1)], dim=-1)
         self.obs_buf_lag_history[:] = torch.cat([prev_obs_buf, cur_obs_buf], dim=1)
 
         # refill the initialized buffers
@@ -321,20 +346,22 @@ class AllegroHandHora(VecTask):
             self.allegro_hand_dof_upper_limits
         ).clone().unsqueeze(1)
         self.obs_buf_lag_history[at_reset_env_ids, :, 16:32] = self.allegro_hand_dof_pos[at_reset_env_ids].unsqueeze(1)
+        if self.use_tactile_obs:
+            self.obs_buf_lag_history[at_reset_env_ids, :, 32:] = 0
         t_buf = (self.obs_buf_lag_history[:, -3:].reshape(self.num_envs, -1)).clone()
 
         self.obs_buf[:, :t_buf.shape[1]] = t_buf
         self.at_reset_buf[at_reset_env_ids] = 0
 
-        if self.use_tactile:
+        if self.use_tactile_hist:
+            assert cur_tactile_buf is not None
             self.tactile_hist_buf[:, :-1] = self.tactile_hist_buf[:, 1:].clone()
-            cur_forces = self.contact_forces[:, self.fingertip_indices, :].reshape(self.num_envs, -1)
-            self.tactile_hist_buf[:, -1] = torch.clamp(cur_forces / 10.0, -1.0, 1.0)
+            self.tactile_hist_buf[:, -1] = cur_tactile_buf
             self.tactile_hist_buf[at_reset_env_ids] = 0
-            self.proprio_hist_buf[:, :, :32] = self.obs_buf_lag_history[:, -self.prop_hist_len:].clone()
+            self.proprio_hist_buf[:, :, :32] = self.obs_buf_lag_history[:, -self.prop_hist_len:, :32].clone()
             self.proprio_hist_buf[:, :, 32:] = self.tactile_hist_buf
         else:
-            self.proprio_hist_buf[:] = self.obs_buf_lag_history[:, -self.prop_hist_len:].clone()
+            self.proprio_hist_buf[:] = self.obs_buf_lag_history[:, -self.prop_hist_len:, :32].clone()
         self._update_priv_buf(env_id=range(self.num_envs), name='obj_position', value=self.object_pos.clone())
 
     def compute_reward(self, actions):
@@ -498,6 +525,7 @@ class AllegroHandHora(VecTask):
         self.randomize_scale_list = rand_config['randomizeScaleList']
         self.randomize_scale_lower = rand_config['randomizeScaleLower']
         self.randomize_scale_upper = rand_config['randomizeScaleUpper']
+        self.grasp_init_scale = rand_config.get('graspInitScale', 0.8)
         self.randomize_pd_gains = rand_config['randomizePDGains']
         self.randomize_p_gain_lower = rand_config['randomizePGainLower']
         self.randomize_p_gain_upper = rand_config['randomizePGainUpper']
@@ -546,9 +574,9 @@ class AllegroHandHora(VecTask):
         self.prop_hist_len = self.config['env']['hora']['propHistoryLen']
         self.num_env_factors = self.config['env']['hora']['privInfoDim']
         self.priv_info_buf = torch.zeros((num_envs, self.num_env_factors), device=self.device, dtype=torch.float)
-        self.hist_obs_dim = 44 if self.use_tactile else 32  # 32 proprio + 12 tactile (when enabled)
+        self.hist_obs_dim = 44 if self.use_tactile_hist else 32  # 32 proprio + 12 tactile history (when enabled)
         self.proprio_hist_buf = torch.zeros((num_envs, self.prop_hist_len, self.hist_obs_dim), device=self.device, dtype=torch.float)
-        if self.use_tactile:
+        if self.use_tactile_hist:
             self.tactile_hist_buf = torch.zeros((num_envs, self.prop_hist_len, 12), device=self.device, dtype=torch.float)
 
     def _setup_reward_config(self, r_config):

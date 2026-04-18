@@ -1,0 +1,51 @@
+{
+  "description": "Compare baseline Stage 2 vs tactile Stage 2 on BTG13 size variants.",
+  "num_envs": 4096,
+  "max_evaluate_envs": 20000,
+  "seeds": [42, 43, 44],
+  "base_overrides": [
+    "task.env.reset_height_threshold=0.6"
+  ],
+  "models": [
+    {
+      "name": "baseline_stage2",
+      "checkpoint": "outputs/AllegroHandHora/hora_v0.0.2/stage2_nn/model_best.ckpt",
+      "algo": "ProprioAdapt",
+      "use_tactile": false
+    },
+    {
+      "name": "tactile_stage2",
+      "checkpoint": "REPLACE_WITH_LOCAL_TACTILE_STAGE2_MODEL_BEST_CKPT",
+      "output_name": "AllegroHandHora/REPLACE_WITH_TACTILE_RUN_NAME",
+      "algo": "ProprioAdapt",
+      "use_tactile": true
+    }
+  ],
+  "objects": [
+    {
+      "name": "btg13_original",
+      "object_type": "custom_btg13_original",
+      "size_longest_edge_m": 0.28197540283203126
+    },
+    {
+      "name": "btg13_lerp_25",
+      "object_type": "custom_btg13_lerp_25",
+      "size_longest_edge_m": 0.23325932990180122
+    },
+    {
+      "name": "btg13_lerp_50",
+      "object_type": "custom_btg13_lerp_50",
+      "size_longest_edge_m": 0.18454325697157117
+    },
+    {
+      "name": "btg13_lerp_75",
+      "object_type": "custom_btg13_lerp_75",
+      "size_longest_edge_m": 0.13582718404134113
+    },
+    {
+      "name": "btg13_mean",
+      "object_type": "custom_btg13_mean",
+      "size_longest_edge_m": 0.0871111111111111
+    }
+  ]
+}

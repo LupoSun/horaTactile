@@ -1,0 +1,66 @@
+{
+  "description": "Compare vanilla HORA Stage 2, tactile Stage 1, and tactile Stage 2 on the BTG13 size ladder with 10 seeds.",
+  "num_envs": 4096,
+  "max_evaluate_envs": 5000,
+  "seeds": [42, 43, 44, 45, 46, 47, 48, 49, 50, 51],
+  "base_overrides": [
+    "task.env.reset_height_threshold=0.6",
+    "task.env.randomization.jointNoiseScale=0.0",
+    "task.env.baseObjScale=1.0",
+    "task.env.randomization.graspInitScale=0.8"
+  ],
+  "models": [
+    {
+      "name": "vanilla_stage2",
+      "checkpoint": "outputs/AllegroHandHora/hora_v0.0.2/stage2_nn/model_best.ckpt",
+      "algo": "ProprioAdapt",
+      "use_tactile_obs": false,
+      "use_tactile_hist": false
+    },
+    {
+      "name": "tactile_stage1_release",
+      "checkpoint": "outputs/AllegroHandHora/double_tactile_s1_2/stage1_nn/best.pth",
+      "algo": "PPO",
+      "use_tactile_obs": true,
+      "use_tactile_hist": false,
+      "priv_info": true,
+      "proprio_adapt": false
+    },
+    {
+      "name": "tactile_stage2_release",
+      "checkpoint": "outputs/AllegroHandHora/double_tactile_s1_2/stage2_nn/model_best.ckpt",
+      "algo": "ProprioAdapt",
+      "use_tactile_obs": true,
+      "use_tactile_hist": true,
+      "priv_info": true,
+      "proprio_adapt": true
+    }
+  ],
+  "objects": [
+    {
+      "name": "btg13_original",
+      "object_type": "custom_btg13_original",
+      "size_longest_edge_m": 0.28197540283203126
+    },
+    {
+      "name": "btg13_lerp_25",
+      "object_type": "custom_btg13_lerp_25",
+      "size_longest_edge_m": 0.23325932990180122
+    },
+    {
+      "name": "btg13_lerp_50",
+      "object_type": "custom_btg13_lerp_50",
+      "size_longest_edge_m": 0.18454325697157117
+    },
+    {
+      "name": "btg13_lerp_75",
+      "object_type": "custom_btg13_lerp_75",
+      "size_longest_edge_m": 0.13582718404134113
+    },
+    {
+      "name": "btg13_mean",
+      "object_type": "custom_btg13_mean",
+      "size_longest_edge_m": 0.0871111111111111
+    }
+  ]
+}
