@@ -37,7 +37,6 @@ env:
   hora:
     propHistoryLen: 30
     privInfoDim: 9
-    useTactile: False
     useTactileObs: False
     useTactileHist: False
 

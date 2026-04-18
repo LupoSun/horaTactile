@@ -25,3 +25,5 @@ cache
 isaac4.tar.gz
 /isaacgym/
 wandb/
+
+.DS_Store

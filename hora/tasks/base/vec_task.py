@@ -188,8 +188,9 @@ class VecTask(Env):
         """
         # allocate buffers
         self.obs_buf = torch.zeros((self.num_envs, self.num_obs), device=self.device, dtype=torch.float)
+        lag_obs_dim = getattr(self, 'lag_obs_dim', self.num_obs // 3)
         self.obs_buf_lag_history = torch.zeros((
-            self.num_envs, 80, self.num_obs // 3
+            self.num_envs, 80, lag_obs_dim
         ), device=self.device, dtype=torch.float)
         self.rew_buf = torch.zeros(self.num_envs, device=self.device, dtype=torch.float)
         self.reset_buf = torch.ones(self.num_envs, device=self.device, dtype=torch.long)

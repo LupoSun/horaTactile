@@ -77,3 +77,13 @@ Training outputs go to `outputs/{task}/{run_name}/` with:
 
 ### Important Constraint
 `import isaacgym` must come before `import torch` — IsaacGym's gymtorch extension requires this load order. This is why `train.py` imports isaacgym first and tasks before algo modules.
+
+## Experiments
+```
+modal run modal_train.py --run-name baseline --runtime-profile a100_compat --stage 2
+modal run modal_train.py --run-name naive_tactile --runtime-profile a100_compat --stage 2 --overrides "task.env.hora.useTactileHist=True"
+
+modal run --detach modal_train.py --run-name baseline_s1 --runtime-profile a100_compat --stage 1 
+modal run --detach modal_train.py --run-name double_tactile_s1 --runtime-profile a100_compat --stage 1 --overrides "task.env.hora.useTactileObs=True"
+modal run --detach modal_train.py --run-name double_tactile_s1 --runtime-profile a100_compat --stage 2 --overrides "task.env.hora.useTactileHist=True task.env.hora.useTactileObs=True"
+```

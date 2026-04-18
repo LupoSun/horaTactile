@@ -28,6 +28,15 @@ Usage:
     # Compare baseline Stage 2 vs tactile-enabled Stage 2
     modal run modal_train.py --run-name baseline --runtime-profile h100_stable --stage 2
     modal run modal_train.py --run-name tactile --runtime-profile h100_stable --stage 2 --tactile
+    # Experiment: Run comparison between naively concatenating contact-force tactile signal v.s. baseline in stage two.
+    # Note: stage 1 checkpoint best.pth should be uploaded first using modal volume put hora-volume 
+    # e.g. modal volume put hora-volume /Users/hz9/dev/horaTactile/outputs/AllegroHandHora/hora_v0.0.2/stage1_nn/best.pth /outputs/AllegroHandHora/double_tactile/stage1_nn/best.pth
+    modal run modal_train.py --run-name baseline --runtime-profile a100_compat --stage 2
+    modal run modal_train.py --run-name naive_tactile --runtime-profile a100_compat --stage 2 --overrides "task.env.hora.useTactileHist=True"
+
+    modal run --detach modal_train.py --run-name baseline_s1 --runtime-profile a100_compat --stage 1 
+    modal run --detach modal_train.py --run-name double_tactile_s1 --runtime-profile a100_compat --stage 1 --overrides "task.env.hora.useTactileObs=True"
+    modal run modal_train.py --run-name double_tactile_s2 --runtime-profile a100_compat --stage 2 --overrides "task.env.hora.useTactileHist=True task.env.hora.useTactileObs=True"
 
 """
 
