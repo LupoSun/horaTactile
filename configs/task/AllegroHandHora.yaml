@@ -2,6 +2,7 @@
 name: AllegroHandHora
 physics_engine: ${..physics_engine}
 on_evaluation: False
+maxEvaluateEnvs: 500000
 
 env:
   # environment basic
@@ -37,6 +38,8 @@ env:
     propHistoryLen: 30
     privInfoDim: 9
     useTactile: False
+    useTactileObs: False
+    useTactileHist: False
 
   reward:
     angvelClipMin: -0.5
@@ -65,6 +68,7 @@ env:
     randomizeScaleList: [0.7, 0.72, 0.74, 0.76, 0.78, 0.8, 0.82, 0.84, 0.86]
     randomizeScaleLower: 0.75  # only useful when not scaleListInit
     randomizeScaleUpper: 0.8  # only useful when not scaleListInit
+    graspInitScale: 0.8
     randomizePDGains: True
     randomizePGainLower: 2.9
     randomizePGainUpper: 3.1

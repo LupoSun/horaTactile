@@ -6,3 +6,6 @@ wandb
 modal
 trimesh
 scipy
+matplotlib
+imageio
+imageio-ffmpeg
