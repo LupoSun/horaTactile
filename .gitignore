@@ -25,3 +25,4 @@ cache
 isaac4.tar.gz
 /isaacgym/
 wandb/
+.torch_extensions/

@@ -1,0 +1,51 @@
+{
+  "name": "BTG_12",
+  "source_file": "BTG_12.stl",
+  "canonical_scale_factor": 155.64543347622248,
+  "source_unit_scale": 0.001,
+  "centroid_offset": [
+    140.24473391186467,
+    129.15623428289314,
+    74.0618603379349
+  ],
+  "original_bbox": [
+    280.53045654296875,
+    281.9879455566406,
+    113.81532287597656
+  ],
+  "normalised_bbox": [
+    1.8023686932377916,
+    1.8117328549810563,
+    0.7312474277850485
+  ],
+  "export_bbox": [
+    0.28053045654296876,
+    0.28198794555664064,
+    0.11381532287597657
+  ],
+  "export_bbox_scale_factor": 0.15564543347622248,
+  "export_bbox_target_size": null,
+  "export_bbox_target_axis": null,
+  "volume_m3": 1922493.409485191,
+  "surface_area_m2": 124542.16518433887,
+  "export_volume_m3": 0.0019224934094851907,
+  "export_surface_area_m2": 0.12454216518433887,
+  "n_faces": 23040,
+  "n_vertices": 11522,
+  "is_watertight": true,
+  "mass_kg": 0.05,
+  "inertia": {
+    "ixx": 0.00013775437887221444,
+    "iyy": 0.0002614831377277884,
+    "izz": 0.00035655405567381503,
+    "ixy": -2.222466327739712e-08,
+    "ixz": -2.7541226822121014e-07,
+    "iyz": -3.318021280631982e-07
+  },
+  "point_cloud_counts": [
+    100,
+    1024
+  ],
+  "point_cloud_space": "unit_sphere",
+  "urdf_file": "BTG_12.urdf"
+}

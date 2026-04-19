@@ -1,0 +1,532 @@
+{
+  "description": "Compare vanilla HORA Stage 2, tactile Stage 1, and tactile Stage 2 on the 5-size ladders for the remaining BTG meshes in Nodes/.",
+  "num_envs": 4096,
+  "max_evaluate_envs": 5000,
+  "seeds": [
+    42,
+    43,
+    44,
+    45,
+    46,
+    47,
+    48,
+    49,
+    50,
+    51
+  ],
+  "base_overrides": [
+    "task.env.reset_height_threshold=0.6",
+    "task.env.randomization.jointNoiseScale=0.0",
+    "task.env.baseObjScale=1.0",
+    "task.env.randomization.graspInitScale=0.8"
+  ],
+  "models": [
+    {
+      "name": "vanilla_stage2",
+      "checkpoint": "outputs/AllegroHandHora/hora_v0.0.2/stage2_nn/model_best.ckpt",
+      "algo": "ProprioAdapt",
+      "use_tactile_obs": false,
+      "use_tactile_hist": false
+    },
+    {
+      "name": "tactile_stage1_release",
+      "checkpoint": "outputs/AllegroHandHora/double_tactile_s1_2/stage1_nn/best.pth",
+      "algo": "PPO",
+      "use_tactile_obs": true,
+      "use_tactile_hist": false,
+      "priv_info": true,
+      "proprio_adapt": false
+    },
+    {
+      "name": "tactile_stage2_release",
+      "checkpoint": "outputs/AllegroHandHora/double_tactile_s1_2/stage2_nn/model_best.ckpt",
+      "algo": "ProprioAdapt",
+      "use_tactile_obs": true,
+      "use_tactile_hist": true,
+      "priv_info": true,
+      "proprio_adapt": true
+    }
+  ],
+  "objects": [
+    {
+      "name": "btg1_original",
+      "object_type": "custom_btg1_original",
+      "size_longest_edge_m": 0.1327399139404297,
+      "source_mesh": "BTG_1.stl",
+      "size_variant": "original",
+      "lerp_t": 0.0
+    },
+    {
+      "name": "btg1_lerp_25",
+      "object_type": "custom_btg1_lerp_25",
+      "size_longest_edge_m": 0.12133271323310006,
+      "source_mesh": "BTG_1.stl",
+      "size_variant": "lerp_25",
+      "lerp_t": 0.25
+    },
+    {
+      "name": "btg1_lerp_50",
+      "object_type": "custom_btg1_lerp_50",
+      "size_longest_edge_m": 0.1099255125257704,
+      "source_mesh": "BTG_1.stl",
+      "size_variant": "lerp_50",
+      "lerp_t": 0.5
+    },
+    {
+      "name": "btg1_lerp_75",
+      "object_type": "custom_btg1_lerp_75",
+      "size_longest_edge_m": 0.09851831181844074,
+      "source_mesh": "BTG_1.stl",
+      "size_variant": "lerp_75",
+      "lerp_t": 0.75
+    },
+    {
+      "name": "btg1_mean",
+      "object_type": "custom_btg1_mean",
+      "size_longest_edge_m": 0.08711111111111108,
+      "source_mesh": "BTG_1.stl",
+      "size_variant": "mean",
+      "lerp_t": 1.0
+    },
+    {
+      "name": "btg10_original",
+      "object_type": "custom_btg10_original",
+      "size_longest_edge_m": 0.28425125122070316,
+      "source_mesh": "BTG_10.stl",
+      "size_variant": "original",
+      "lerp_t": 0.0
+    },
+    {
+      "name": "btg10_lerp_25",
+      "object_type": "custom_btg10_lerp_25",
+      "size_longest_edge_m": 0.23496621619330516,
+      "source_mesh": "BTG_10.stl",
+      "size_variant": "lerp_25",
+      "lerp_t": 0.25
+    },
+    {
+      "name": "btg10_lerp_50",
+      "object_type": "custom_btg10_lerp_50",
+      "size_longest_edge_m": 0.1856811811659071,
+      "source_mesh": "BTG_10.stl",
+      "size_variant": "lerp_50",
+      "lerp_t": 0.5
+    },
+    {
+      "name": "btg10_lerp_75",
+      "object_type": "custom_btg10_lerp_75",
+      "size_longest_edge_m": 0.1363961461385091,
+      "source_mesh": "BTG_10.stl",
+      "size_variant": "lerp_75",
+      "lerp_t": 0.75
+    },
+    {
+      "name": "btg10_mean",
+      "object_type": "custom_btg10_mean",
+      "size_longest_edge_m": 0.08711111111111108,
+      "source_mesh": "BTG_10.stl",
+      "size_variant": "mean",
+      "lerp_t": 1.0
+    },
+    {
+      "name": "btg11_original",
+      "object_type": "custom_btg11_original",
+      "size_longest_edge_m": 0.23521018981933597,
+      "source_mesh": "BTG_11.stl",
+      "size_variant": "original",
+      "lerp_t": 0.0
+    },
+    {
+      "name": "btg11_lerp_25",
+      "object_type": "custom_btg11_lerp_25",
+      "size_longest_edge_m": 0.19818542014227974,
+      "source_mesh": "BTG_11.stl",
+      "size_variant": "lerp_25",
+      "lerp_t": 0.25
+    },
+    {
+      "name": "btg11_lerp_50",
+      "object_type": "custom_btg11_lerp_50",
+      "size_longest_edge_m": 0.16116065046522354,
+      "source_mesh": "BTG_11.stl",
+      "size_variant": "lerp_50",
+      "lerp_t": 0.5
+    },
+    {
+      "name": "btg11_lerp_75",
+      "object_type": "custom_btg11_lerp_75",
+      "size_longest_edge_m": 0.12413588078816731,
+      "source_mesh": "BTG_11.stl",
+      "size_variant": "lerp_75",
+      "lerp_t": 0.75
+    },
+    {
+      "name": "btg11_mean",
+      "object_type": "custom_btg11_mean",
+      "size_longest_edge_m": 0.08711111111111111,
+      "source_mesh": "BTG_11.stl",
+      "size_variant": "mean",
+      "lerp_t": 1.0
+    },
+    {
+      "name": "btg12_original",
+      "object_type": "custom_btg12_original",
+      "size_longest_edge_m": 0.28198794555664064,
+      "source_mesh": "BTG_12.stl",
+      "size_variant": "original",
+      "lerp_t": 0.0
+    },
+    {
+      "name": "btg12_lerp_25",
+      "object_type": "custom_btg12_lerp_25",
+      "size_longest_edge_m": 0.23326873694525818,
+      "source_mesh": "BTG_12.stl",
+      "size_variant": "lerp_25",
+      "lerp_t": 0.25
+    },
+    {
+      "name": "btg12_lerp_50",
+      "object_type": "custom_btg12_lerp_50",
+      "size_longest_edge_m": 0.18454952833387586,
+      "source_mesh": "BTG_12.stl",
+      "size_variant": "lerp_50",
+      "lerp_t": 0.5
+    },
+    {
+      "name": "btg12_lerp_75",
+      "object_type": "custom_btg12_lerp_75",
+      "size_longest_edge_m": 0.13583031972249346,
+      "source_mesh": "BTG_12.stl",
+      "size_variant": "lerp_75",
+      "lerp_t": 0.75
+    },
+    {
+      "name": "btg12_mean",
+      "object_type": "custom_btg12_mean",
+      "size_longest_edge_m": 0.08711111111111108,
+      "source_mesh": "BTG_12.stl",
+      "size_variant": "mean",
+      "lerp_t": 1.0
+    },
+    {
+      "name": "btg2_original",
+      "object_type": "custom_btg2_original",
+      "size_longest_edge_m": 0.28231149291992186,
+      "source_mesh": "BTG_2.stl",
+      "size_variant": "original",
+      "lerp_t": 0.0
+    },
+    {
+      "name": "btg2_lerp_25",
+      "object_type": "custom_btg2_lerp_25",
+      "size_longest_edge_m": 0.23351139746771915,
+      "source_mesh": "BTG_2.stl",
+      "size_variant": "lerp_25",
+      "lerp_t": 0.25
+    },
+    {
+      "name": "btg2_lerp_50",
+      "object_type": "custom_btg2_lerp_50",
+      "size_longest_edge_m": 0.1847113020155165,
+      "source_mesh": "BTG_2.stl",
+      "size_variant": "lerp_50",
+      "lerp_t": 0.5
+    },
+    {
+      "name": "btg2_lerp_75",
+      "object_type": "custom_btg2_lerp_75",
+      "size_longest_edge_m": 0.1359112065633138,
+      "source_mesh": "BTG_2.stl",
+      "size_variant": "lerp_75",
+      "lerp_t": 0.75
+    },
+    {
+      "name": "btg2_mean",
+      "object_type": "custom_btg2_mean",
+      "size_longest_edge_m": 0.08711111111111108,
+      "source_mesh": "BTG_2.stl",
+      "size_variant": "mean",
+      "lerp_t": 1.0
+    },
+    {
+      "name": "btg3_original",
+      "object_type": "custom_btg3_original",
+      "size_longest_edge_m": 0.27867706298828127,
+      "source_mesh": "BTG_3.stl",
+      "size_variant": "original",
+      "lerp_t": 0.0
+    },
+    {
+      "name": "btg3_lerp_25",
+      "object_type": "custom_btg3_lerp_25",
+      "size_longest_edge_m": 0.23078557501898872,
+      "source_mesh": "BTG_3.stl",
+      "size_variant": "lerp_25",
+      "lerp_t": 0.25
+    },
+    {
+      "name": "btg3_lerp_50",
+      "object_type": "custom_btg3_lerp_50",
+      "size_longest_edge_m": 0.18289408704969617,
+      "source_mesh": "BTG_3.stl",
+      "size_variant": "lerp_50",
+      "lerp_t": 0.5
+    },
+    {
+      "name": "btg3_lerp_75",
+      "object_type": "custom_btg3_lerp_75",
+      "size_longest_edge_m": 0.13500259908040363,
+      "source_mesh": "BTG_3.stl",
+      "size_variant": "lerp_75",
+      "lerp_t": 0.75
+    },
+    {
+      "name": "btg3_mean",
+      "object_type": "custom_btg3_mean",
+      "size_longest_edge_m": 0.08711111111111108,
+      "source_mesh": "BTG_3.stl",
+      "size_variant": "mean",
+      "lerp_t": 1.0
+    },
+    {
+      "name": "btg4_original",
+      "object_type": "custom_btg4_original",
+      "size_longest_edge_m": 0.2645213012695313,
+      "source_mesh": "BTG_4.stl",
+      "size_variant": "original",
+      "lerp_t": 0.0
+    },
+    {
+      "name": "btg4_lerp_25",
+      "object_type": "custom_btg4_lerp_25",
+      "size_longest_edge_m": 0.22016875372992623,
+      "source_mesh": "BTG_4.stl",
+      "size_variant": "lerp_25",
+      "lerp_t": 0.25
+    },
+    {
+      "name": "btg4_lerp_50",
+      "object_type": "custom_btg4_lerp_50",
+      "size_longest_edge_m": 0.17581620619032118,
+      "source_mesh": "BTG_4.stl",
+      "size_variant": "lerp_50",
+      "lerp_t": 0.5
+    },
+    {
+      "name": "btg4_lerp_75",
+      "object_type": "custom_btg4_lerp_75",
+      "size_longest_edge_m": 0.13146365865071613,
+      "source_mesh": "BTG_4.stl",
+      "size_variant": "lerp_75",
+      "lerp_t": 0.75
+    },
+    {
+      "name": "btg4_mean",
+      "object_type": "custom_btg4_mean",
+      "size_longest_edge_m": 0.08711111111111108,
+      "source_mesh": "BTG_4.stl",
+      "size_variant": "mean",
+      "lerp_t": 1.0
+    },
+    {
+      "name": "btg5_original",
+      "object_type": "custom_btg5_original",
+      "size_longest_edge_m": 0.28311376953125,
+      "source_mesh": "BTG_5.stl",
+      "size_variant": "original",
+      "lerp_t": 0.0
+    },
+    {
+      "name": "btg5_lerp_25",
+      "object_type": "custom_btg5_lerp_25",
+      "size_longest_edge_m": 0.2341131049262153,
+      "source_mesh": "BTG_5.stl",
+      "size_variant": "lerp_25",
+      "lerp_t": 0.25
+    },
+    {
+      "name": "btg5_lerp_50",
+      "object_type": "custom_btg5_lerp_50",
+      "size_longest_edge_m": 0.18511244032118057,
+      "source_mesh": "BTG_5.stl",
+      "size_variant": "lerp_50",
+      "lerp_t": 0.5
+    },
+    {
+      "name": "btg5_lerp_75",
+      "object_type": "custom_btg5_lerp_75",
+      "size_longest_edge_m": 0.1361117757161458,
+      "source_mesh": "BTG_5.stl",
+      "size_variant": "lerp_75",
+      "lerp_t": 0.75
+    },
+    {
+      "name": "btg5_mean",
+      "object_type": "custom_btg5_mean",
+      "size_longest_edge_m": 0.08711111111111108,
+      "source_mesh": "BTG_5.stl",
+      "size_variant": "mean",
+      "lerp_t": 1.0
+    },
+    {
+      "name": "btg6_original",
+      "object_type": "custom_btg6_original",
+      "size_longest_edge_m": 0.2838056945800781,
+      "source_mesh": "BTG_6.stl",
+      "size_variant": "original",
+      "lerp_t": 0.0
+    },
+    {
+      "name": "btg6_lerp_25",
+      "object_type": "custom_btg6_lerp_25",
+      "size_longest_edge_m": 0.23463204871283633,
+      "source_mesh": "BTG_6.stl",
+      "size_variant": "lerp_25",
+      "lerp_t": 0.25
+    },
+    {
+      "name": "btg6_lerp_50",
+      "object_type": "custom_btg6_lerp_50",
+      "size_longest_edge_m": 0.18545840284559462,
+      "source_mesh": "BTG_6.stl",
+      "size_variant": "lerp_50",
+      "lerp_t": 0.5
+    },
+    {
+      "name": "btg6_lerp_75",
+      "object_type": "custom_btg6_lerp_75",
+      "size_longest_edge_m": 0.13628475697835285,
+      "source_mesh": "BTG_6.stl",
+      "size_variant": "lerp_75",
+      "lerp_t": 0.75
+    },
+    {
+      "name": "btg6_mean",
+      "object_type": "custom_btg6_mean",
+      "size_longest_edge_m": 0.08711111111111108,
+      "source_mesh": "BTG_6.stl",
+      "size_variant": "mean",
+      "lerp_t": 1.0
+    },
+    {
+      "name": "btg7_original",
+      "object_type": "custom_btg7_original",
+      "size_longest_edge_m": 0.28423934936523443,
+      "source_mesh": "BTG_7.stl",
+      "size_variant": "original",
+      "lerp_t": 0.0
+    },
+    {
+      "name": "btg7_lerp_25",
+      "object_type": "custom_btg7_lerp_25",
+      "size_longest_edge_m": 0.23495728980170358,
+      "source_mesh": "BTG_7.stl",
+      "size_variant": "lerp_25",
+      "lerp_t": 0.25
+    },
+    {
+      "name": "btg7_lerp_50",
+      "object_type": "custom_btg7_lerp_50",
+      "size_longest_edge_m": 0.18567523023817273,
+      "source_mesh": "BTG_7.stl",
+      "size_variant": "lerp_50",
+      "lerp_t": 0.5
+    },
+    {
+      "name": "btg7_lerp_75",
+      "object_type": "custom_btg7_lerp_75",
+      "size_longest_edge_m": 0.1363931706746419,
+      "source_mesh": "BTG_7.stl",
+      "size_variant": "lerp_75",
+      "lerp_t": 0.75
+    },
+    {
+      "name": "btg7_mean",
+      "object_type": "custom_btg7_mean",
+      "size_longest_edge_m": 0.08711111111111108,
+      "source_mesh": "BTG_7.stl",
+      "size_variant": "mean",
+      "lerp_t": 1.0
+    },
+    {
+      "name": "btg8_original",
+      "object_type": "custom_btg8_original",
+      "size_longest_edge_m": 0.28261737060546877,
+      "source_mesh": "BTG_8.stl",
+      "size_variant": "original",
+      "lerp_t": 0.0
+    },
+    {
+      "name": "btg8_lerp_25",
+      "object_type": "custom_btg8_lerp_25",
+      "size_longest_edge_m": 0.23374080573187933,
+      "source_mesh": "BTG_8.stl",
+      "size_variant": "lerp_25",
+      "lerp_t": 0.25
+    },
+    {
+      "name": "btg8_lerp_50",
+      "object_type": "custom_btg8_lerp_50",
+      "size_longest_edge_m": 0.1848642408582899,
+      "source_mesh": "BTG_8.stl",
+      "size_variant": "lerp_50",
+      "lerp_t": 0.5
+    },
+    {
+      "name": "btg8_lerp_75",
+      "object_type": "custom_btg8_lerp_75",
+      "size_longest_edge_m": 0.13598767598470052,
+      "source_mesh": "BTG_8.stl",
+      "size_variant": "lerp_75",
+      "lerp_t": 0.75
+    },
+    {
+      "name": "btg8_mean",
+      "object_type": "custom_btg8_mean",
+      "size_longest_edge_m": 0.08711111111111108,
+      "source_mesh": "BTG_8.stl",
+      "size_variant": "mean",
+      "lerp_t": 1.0
+    },
+    {
+      "name": "btg9_original",
+      "object_type": "custom_btg9_original",
+      "size_longest_edge_m": 0.28334024047851564,
+      "source_mesh": "BTG_9.stl",
+      "size_variant": "original",
+      "lerp_t": 0.0
+    },
+    {
+      "name": "btg9_lerp_25",
+      "object_type": "custom_btg9_lerp_25",
+      "size_longest_edge_m": 0.2342829581366645,
+      "source_mesh": "BTG_9.stl",
+      "size_variant": "lerp_25",
+      "lerp_t": 0.25
+    },
+    {
+      "name": "btg9_lerp_50",
+      "object_type": "custom_btg9_lerp_50",
+      "size_longest_edge_m": 0.18522567579481336,
+      "source_mesh": "BTG_9.stl",
+      "size_variant": "lerp_50",
+      "lerp_t": 0.5
+    },
+    {
+      "name": "btg9_lerp_75",
+      "object_type": "custom_btg9_lerp_75",
+      "size_longest_edge_m": 0.13616839345296222,
+      "source_mesh": "BTG_9.stl",
+      "size_variant": "lerp_75",
+      "lerp_t": 0.75
+    },
+    {
+      "name": "btg9_mean",
+      "object_type": "custom_btg9_mean",
+      "size_longest_edge_m": 0.08711111111111108,
+      "source_mesh": "BTG_9.stl",
+      "size_variant": "mean",
+      "lerp_t": 1.0
+    }
+  ]
+}
