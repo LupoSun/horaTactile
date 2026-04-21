@@ -40,6 +40,11 @@ Usage:
     modal run --detach modal_train.py --run-name double_tactile_s1 --runtime-profile a100_compat --stage 1 --overrides "task.env.hora.useTactileObs=True"
     modal run --detach modal_train.py --run-name double_tactile_s2 --runtime-profile a100_compat --stage 2 --overrides "task.env.hora.useTactileHist=True task.env.hora.useTactileObs=True"
 
+    # Run an evaluation sweep on Modal
+    modal run --detach modal_train.py::eval_sweep \
+        --manifest configs/eval_sweeps/btg13_tactile04201119_10seeds.json \
+        --runtime-profile a100_compat
+
 """
 
 from __future__ import annotations
@@ -460,6 +465,31 @@ def _run_with_periodic_commits(cmd: list[str]):
         raise subprocess.CalledProcessError(returncode, cmd)
 
 
+def build_eval_sweep_command(
+    manifest: str,
+    output_dir: str = "",
+    dry_run: bool = False,
+) -> list[str]:
+    cmd = [
+        CONDA_PYTHON,
+        "scripts/eval_object_sweep.py",
+        manifest,
+        "--python",
+        CONDA_PYTHON,
+    ]
+    if output_dir:
+        cmd.extend(["--output-dir", output_dir])
+    if dry_run:
+        cmd.append("--dry-run")
+    return cmd
+
+
+def _run_eval_sweep(manifest: str, output_dir: str = "", dry_run: bool = False):
+    setup_project_symlinks()
+    cmd = build_eval_sweep_command(manifest, output_dir=output_dir, dry_run=dry_run)
+    _run_with_periodic_commits(cmd)
+
+
 def _run_stage(stage: int, run_name: str, seed: int = 0, extra_args: tuple[str, ...] = (), tactile: bool = False):
     setup_project_symlinks()
     if stage == 1:
@@ -487,6 +517,21 @@ def get_stage_remote_functions(runtime_profile: str = DEFAULT_RUNTIME_PROFILE):
     if runtime_profile == H100_PROBE_PROFILE:
         return train_stage1_h100_probe_remote, train_stage2_h100_probe_remote
     return train_stage1_h100_compat_remote, train_stage2_h100_compat_remote
+
+
+def get_eval_sweep_remote_function(runtime_profile: str = DEFAULT_RUNTIME_PROFILE):
+    get_runtime_profile(runtime_profile)
+    if runtime_profile == T4_STABLE_PROFILE:
+        return eval_sweep_t4_stable_remote
+    if runtime_profile == A100_PROBE_PROFILE:
+        return eval_sweep_a100_probe_remote
+    if runtime_profile == A100_COMPAT_PROFILE:
+        return eval_sweep_a100_compat_remote
+    if runtime_profile == H100_STABLE_PROFILE:
+        return eval_sweep_h100_stable_remote
+    if runtime_profile == H100_PROBE_PROFILE:
+        return eval_sweep_h100_probe_remote
+    return eval_sweep_h100_compat_remote
 
 
 def run_requested_stages(
@@ -707,6 +752,110 @@ def train_stage2_h100_compat_remote(run_name: str, seed: int = 0, extra_args: tu
     """Stage 2 on the alternate H100 compatibility image."""
     emit_runtime_diagnostics(H100_COMPAT_PROFILE)
     _run_stage(2, run_name, seed=seed, extra_args=extra_args)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[T4_STABLE_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[T4_STABLE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[T4_STABLE_PROFILE].function_env,
+))
+def eval_sweep_t4_stable_remote(manifest: str, output_dir: str = "", dry_run: bool = False):
+    """Run a manifest-driven evaluation sweep on T4."""
+    emit_runtime_diagnostics(T4_STABLE_PROFILE)
+    _run_eval_sweep(manifest, output_dir=output_dir, dry_run=dry_run)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[A100_PROBE_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[A100_PROBE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[A100_PROBE_PROFILE].function_env,
+))
+def eval_sweep_a100_probe_remote(manifest: str, output_dir: str = "", dry_run: bool = False):
+    """Run a manifest-driven evaluation sweep on the current A100 image."""
+    emit_runtime_diagnostics(A100_PROBE_PROFILE)
+    _run_eval_sweep(manifest, output_dir=output_dir, dry_run=dry_run)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[A100_COMPAT_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[A100_COMPAT_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[A100_COMPAT_PROFILE].function_env,
+))
+def eval_sweep_a100_compat_remote(manifest: str, output_dir: str = "", dry_run: bool = False):
+    """Run a manifest-driven evaluation sweep on the alternate A100 compatibility image."""
+    emit_runtime_diagnostics(A100_COMPAT_PROFILE)
+    _run_eval_sweep(manifest, output_dir=output_dir, dry_run=dry_run)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[H100_STABLE_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[H100_STABLE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[H100_STABLE_PROFILE].function_env,
+))
+def eval_sweep_h100_stable_remote(manifest: str, output_dir: str = "", dry_run: bool = False):
+    """Run a manifest-driven evaluation sweep on the validated H100 image."""
+    emit_runtime_diagnostics(H100_STABLE_PROFILE)
+    _run_eval_sweep(manifest, output_dir=output_dir, dry_run=dry_run)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[H100_PROBE_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[H100_PROBE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[H100_PROBE_PROFILE].function_env,
+))
+def eval_sweep_h100_probe_remote(manifest: str, output_dir: str = "", dry_run: bool = False):
+    """Run a manifest-driven evaluation sweep on the current H100 image."""
+    emit_runtime_diagnostics(H100_PROBE_PROFILE)
+    _run_eval_sweep(manifest, output_dir=output_dir, dry_run=dry_run)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[H100_COMPAT_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[H100_COMPAT_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[H100_COMPAT_PROFILE].function_env,
+))
+def eval_sweep_h100_compat_remote(manifest: str, output_dir: str = "", dry_run: bool = False):
+    """Run a manifest-driven evaluation sweep on the alternate H100 compatibility image."""
+    emit_runtime_diagnostics(H100_COMPAT_PROFILE)
+    _run_eval_sweep(manifest, output_dir=output_dir, dry_run=dry_run)
+
+
+@app.local_entrypoint()
+def eval_sweep(
+    manifest: str,
+    output_dir: str = "",
+    runtime_profile: str = DEFAULT_RUNTIME_PROFILE,
+    dry_run: bool = False,
+):
+    """
+    Run a manifest-driven eval sweep on Modal.
+
+    Args:
+        manifest: Repo-relative manifest path, e.g. configs/eval_sweeps/btg13_tactile04201119_10seeds.json.
+        output_dir: Optional output directory. Defaults to outputs/eval_sweeps/<manifest>_<timestamp>/ on the volume.
+        runtime_profile: Modal runtime profile. One of t4_stable, a100_probe, a100_compat, h100_stable, h100_probe, h100_compat.
+        dry_run: Prepare cases without running Isaac Gym evals.
+    """
+    remote_fn = get_eval_sweep_remote_function(runtime_profile)
+    remote_fn.remote(manifest, output_dir, dry_run)
 
 
 @app.local_entrypoint()

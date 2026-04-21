@@ -52,6 +52,11 @@ def _build_camera(env, env_id: int, width: int, height: int, position: tuple[flo
     cam_props.width = width
     cam_props.height = height
     camera_handle = env.gym.create_camera_sensor(env.envs[env_id], cam_props)
+    if camera_handle < 0:
+        raise RuntimeError(
+            "Isaac Gym failed to create a camera sensor. "
+            "This usually means the remote runtime does not support offscreen graphics for this sim configuration."
+        )
     env.gym.set_camera_location(
         camera_handle,
         env.envs[env_id],
@@ -110,7 +115,9 @@ def main() -> None:
     parser.add_argument("--stage", type=int, choices=(1, 2), required=True, help="Training stage to record.")
     parser.add_argument("--checkpoint", help="Optional explicit checkpoint path. Overrides --run-name when provided.")
     parser.add_argument("--object-type", default="simple_tennis_ball", help="task.env.object.type override to render.")
-    parser.add_argument("--tactile", action="store_true", help="Enable tactile history for Stage 2 playback.")
+    parser.add_argument("--tactile", action="store_true", help="Compatibility alias for --tactile-hist.")
+    parser.add_argument("--tactile-obs", action="store_true", help="Include tactile values in the policy observation.")
+    parser.add_argument("--tactile-hist", action="store_true", help="Include tactile values in the adaptation history.")
     parser.add_argument("--steps", type=int, default=400, help="Number of policy steps to record.")
     parser.add_argument("--frame-every", type=int, default=1, help="Capture every Nth policy step.")
     parser.add_argument("--fps", type=int, default=20, help="Playback FPS for GIF/MP4 output.")
@@ -156,7 +163,8 @@ def main() -> None:
         checkpoint=checkpoint,
         stage=args.stage,
         object_type=args.object_type,
-        use_tactile=args.tactile,
+        use_tactile_obs=args.tactile_obs,
+        use_tactile_hist=args.tactile_hist or args.tactile,
         num_envs=args.num_envs,
         extra_overrides=extra_overrides,
     )

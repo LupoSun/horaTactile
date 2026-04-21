@@ -36,6 +36,8 @@ PROGRESS_PATTERN = re.compile(
     r"command torque: (?P<command_torque>-?\d+(?:\.\d+)?)"
 )
 
+CASE_BAR_WIDTH = 24
+
 
 def load_manifest(path: Path) -> dict[str, Any]:
     data = json.loads(path.read_text())
@@ -102,7 +104,6 @@ def build_eval_command(
         f"task.env.object.type={obj['object_type']}",
         f"seed={seed}",
         f"train.algo={algo}",
-        f"task.env.hora.useTactile={'True' if use_tactile_hist else 'False'}",
         f"task.env.hora.useTactileObs={'True' if use_tactile_obs else 'False'}",
         f"task.env.hora.useTactileHist={'True' if use_tactile_hist else 'False'}",
         f"train.ppo.priv_info={'True' if priv_info else 'False'}",
@@ -179,7 +180,39 @@ def _write_results_json(results: list[dict[str, Any]], path: Path) -> None:
     path.write_text(json.dumps(results, indent=2))
 
 
-def _stream_subprocess(command: list[str], log_path: Path) -> tuple[int, str]:
+def _progress_bar(done: int, total: int, width: int = CASE_BAR_WIDTH) -> str:
+    if total <= 0:
+        return "[" + ("-" * width) + "]"
+    filled = min(width, int(width * done / total))
+    return "[" + ("#" * filled) + ("-" * (width - filled)) + "]"
+
+
+def _print_case_progress(
+    completed: int,
+    total: int,
+    case_name: str,
+    status: str = "running",
+    detail: str = "",
+    end: str = "\r",
+) -> None:
+    line = f"{_progress_bar(completed, total)} {completed}/{total} {status}: {case_name}"
+    if detail:
+        line = f"{line} | {detail}"
+    print(line[:220].ljust(220), end=end, flush=True)
+
+
+def _last_nonempty_lines(output_text: str, limit: int = 8) -> list[str]:
+    lines = [line.strip() for line in output_text.splitlines() if line.strip()]
+    return lines[-limit:]
+
+
+def _stream_subprocess(
+    command: list[str],
+    log_path: Path,
+    case_name: str,
+    completed: int,
+    total: int,
+) -> tuple[int, str]:
     process = subprocess.Popen(
         command,
         cwd=REPO_ROOT,
@@ -194,7 +227,14 @@ def _stream_subprocess(command: list[str], log_path: Path) -> tuple[int, str]:
         for line in process.stdout:
             captured.append(line)
             log_handle.write(line)
-            print(line, end="")
+            match = PROGRESS_PATTERN.search(line)
+            if match:
+                groups = match.groupdict()
+                detail = (
+                    f"eval {groups['progress']}/{groups['max_evaluate_envs']} "
+                    f"reward={groups['reward']} rotate={groups['rotate_reward']}"
+                )
+                _print_case_progress(completed, total, case_name, detail=detail)
     returncode = process.wait()
     return returncode, "".join(captured)
 
@@ -214,6 +254,7 @@ def run_sweep(
     (output_dir / "manifest.snapshot.json").write_text(json.dumps(manifest, indent=2))
 
     results: list[dict[str, Any]] = []
+    total_cases = len(manifest["models"]) * len(manifest["objects"]) * len(manifest["seeds"])
     for model in manifest["models"]:
         for obj in manifest["objects"]:
             for seed in manifest["seeds"]:
@@ -246,12 +287,34 @@ def run_sweep(
                     results.append(result)
                     continue
 
-                print(f"\n=== Running {case_name} ===")
-                returncode, output_text = _stream_subprocess(command, log_path)
+                _print_case_progress(len(results), total_cases, case_name)
+                returncode, output_text = _stream_subprocess(
+                    command,
+                    log_path,
+                    case_name=case_name,
+                    completed=len(results),
+                    total=total_cases,
+                )
                 result["returncode"] = returncode
                 result["metrics"] = parse_eval_metrics(output_text)
                 result["status"] = "ok" if returncode == 0 and result["metrics"] is not None else "error"
                 results.append(result)
+
+                if result["status"] == "ok":
+                    metrics = result["metrics"] or {}
+                    detail = f"reward={metrics.get('reward', 0):.2f} rotate={metrics.get('rotate_reward', 0):.2f}"
+                    _print_case_progress(len(results), total_cases, case_name, status="ok", detail=detail, end="\n")
+                else:
+                    _print_case_progress(
+                        len(results),
+                        total_cases,
+                        case_name,
+                        status="error",
+                        detail=f"see {log_path.relative_to(output_dir)}",
+                        end="\n",
+                    )
+                    for line in _last_nonempty_lines(output_text):
+                        print(f"  {line}")
 
                 _write_results_json(results, output_dir / "results.json")
                 write_results_csv(results, output_dir / "results.csv")
