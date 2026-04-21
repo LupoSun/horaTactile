@@ -124,6 +124,15 @@ def test_init_wandb_run_passes_resolved_config(monkeypatch):
     assert init_kwargs["config"] == {"train": {"ppo": {"output_name": "demo"}}}
 
 
+def test_init_wandb_run_skips_wandb_when_disabled(monkeypatch):
+    monkeypatch.setenv("WANDB_MODE", "disabled")
+    monkeypatch.delattr(wandb_utils.wandb, "init", raising=False)
+
+    config = OmegaConf.create({"train": {"ppo": {"output_name": "demo"}}})
+
+    assert wandb_utils.init_wandb_run(config, name="demo", group="stage2") is None
+
+
 def test_stage_wandb_name_suffixes_known_stages():
     assert wandb_utils.stage_wandb_name("AllegroHandHora/demo", "stage1") == "AllegroHandHora/demo_s1"
     assert wandb_utils.stage_wandb_name("AllegroHandHora/demo", "stage2") == "AllegroHandHora/demo_s2"

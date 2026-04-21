@@ -24,10 +24,13 @@ def stage_wandb_name(name: str, group: str) -> str:
 
 
 def init_wandb_run(full_config, name: str, group: str, project: str = "hora"):
+    mode = resolve_wandb_mode()
+    if mode == "disabled":
+        return None
     return wandb.init(
         project=project,
         name=stage_wandb_name(name, group),
         group=group,
         config=get_wandb_config(full_config),
-        mode=resolve_wandb_mode(),
+        mode=mode,
     )
