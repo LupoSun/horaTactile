@@ -53,7 +53,7 @@ def test_build_eval_command_includes_tactile_history_and_eval_budget():
     assert "task.maxEvaluateEnvs=5000" in command
     assert "task.env.numEnvs=1024" in command
     assert "task.env.object.type=custom_btg13_mean" in command
-    assert "task.env.hora.useTactile=True" in command
+    assert not any(arg.startswith("task.env.hora.useTactile=") for arg in command)
     assert "task.env.hora.useTactileObs=False" in command
     assert "task.env.hora.useTactileHist=True" in command
     assert "train.ppo.proprio_adapt=True" in command
@@ -80,7 +80,7 @@ def test_build_eval_command_supports_tactile_observation_release_mode():
 
     command = build_eval_command(manifest, model, obj, seed=11, python_executable="/venv/bin/python")
 
-    assert "task.env.hora.useTactile=False" in command
+    assert not any(arg.startswith("task.env.hora.useTactile=") for arg in command)
     assert "task.env.hora.useTactileObs=True" in command
     assert "task.env.hora.useTactileHist=False" in command
     assert "train.algo=PPO" in command

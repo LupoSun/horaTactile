@@ -6,37 +6,46 @@ Usage:
     modal run modal_train.py::setup_cache_remote
 
     # Train both stages sequentially
-    modal run modal_train.py --run-name my_exp
+    modal run modal_train.py::main --run-name my_exp
 
     # Train a single stage
-    modal run modal_train.py --run-name my_exp --stage 1
-    modal run modal_train.py --run-name my_exp --stage 2
+    modal run modal_train.py::main --run-name my_exp --stage 1
+    modal run modal_train.py::main --run-name my_exp --stage 2
+    modal run modal_train.py::main --run-name my_exp --stage 3
 
     # Train baseline stage 1 + tactile stage 2
-    modal run modal_train.py --run-name my_exp --runtime-profile h100_stable --tactile
+    modal run modal_train.py::main --run-name my_exp --runtime-profile h100_stable --tactile
 
     # Select an explicit runtime profile
-    modal run modal_train.py --run-name my_exp --runtime-profile h100_stable --stage 1
-    modal run modal_train.py --run-name my_exp --runtime-profile a100_probe --stage 1
-    modal run modal_train.py --run-name my_exp --runtime-profile a100_compat --stage 1
-    modal run modal_train.py --run-name my_exp --runtime-profile h100_probe --stage 1
-    modal run modal_train.py --run-name my_exp --runtime-profile h100_compat --stage 1
+    modal run modal_train.py::main --run-name my_exp --runtime-profile h100_stable --stage 1
+    modal run modal_train.py::main --run-name my_exp --runtime-profile a100_probe --stage 1
+    modal run modal_train.py::main --run-name my_exp --runtime-profile a100_compat --stage 1
+    modal run modal_train.py::main --run-name my_exp --runtime-profile h100_probe --stage 1
+    modal run modal_train.py::main --run-name my_exp --runtime-profile h100_compat --stage 1
 
     # Pass extra Hydra overrides
-    modal run modal_train.py --run-name my_exp --overrides "task.env.numEnvs=4096 train.ppo.max_agent_steps=1024"
+    modal run modal_train.py::main --run-name my_exp --overrides "task.env.numEnvs=4096 train.ppo.max_agent_steps=1024"
 
     # Compare baseline Stage 2 vs tactile-enabled Stage 2
-    modal run modal_train.py --run-name baseline --runtime-profile h100_stable --stage 2
-    modal run modal_train.py --run-name tactile --runtime-profile h100_stable --stage 2 --tactile
+    modal run modal_train.py::main --run-name baseline --runtime-profile h100_stable --stage 2
+    modal run modal_train.py::main --run-name tactile --runtime-profile h100_stable --stage 2 --tactile
     # Experiment: Run comparison between naively concatenating contact-force tactile signal v.s. baseline in stage two.
     # Note: stage 1 checkpoint best.pth should be uploaded first using modal volume put hora-volume 
     # e.g. modal volume put hora-volume /Users/hz9/dev/horaTactile/outputs/AllegroHandHora/hora_v0.0.2/stage1_nn/best.pth /outputs/AllegroHandHora/double_tactile/stage1_nn/best.pth
-    modal run modal_train.py --run-name baseline --runtime-profile a100_compat --stage 2
-    modal run modal_train.py --run-name naive_tactile --runtime-profile a100_compat --stage 2 --overrides "task.env.hora.useTactileHist=True"
+    modal run modal_train.py::main --run-name baseline --runtime-profile a100_compat --stage 2
+    modal run modal_train.py::main --run-name naive_tactile --runtime-profile a100_compat --stage 2 --overrides "task.env.hora.useTactileHist=True"
 
-    modal run --detach modal_train.py --run-name baseline_s1 --runtime-profile a100_compat --stage 1 
-    modal run --detach modal_train.py --run-name double_tactile_s1 --runtime-profile a100_compat --stage 1 --overrides "task.env.hora.useTactileObs=True"
-    modal run modal_train.py --run-name double_tactile_s2 --runtime-profile a100_compat --stage 2 --overrides "task.env.hora.useTactileHist=True task.env.hora.useTactileObs=True"
+    conda activate hora2
+    wandb online
+    modal run --detach modal_train.py::main --run-name baseline_s1 --runtime-profile a100_compat --stage 1 
+    modal run --detach modal_train.py::main --run-name double_tactile_s1 --runtime-profile a100_compat --stage 1 --overrides "task.env.hora.useTactileObs=True"
+    modal run --detach modal_train.py::main --run-name double_tactile_s2 --runtime-profile a100_compat --stage 2 --overrides "task.env.hora.useTactileHist=True task.env.hora.useTactileObs=True"
+    modal run --detach modal_train.py::main --run-name double_tactile_s2 --runtime-profile a100_compat --stage 3 --overrides "task.env.hora.useTactileHist=True task.env.hora.useTactileObs=True"
+
+    # Run an evaluation sweep on Modal
+    modal run --detach modal_train.py::eval_sweep \
+        --manifest configs/eval_sweeps/btg13_tactile04201119_10seeds.json \
+        --runtime-profile a100_compat
 
 """
 
@@ -303,12 +312,15 @@ def parse_overrides(overrides: str) -> tuple[str, ...]:
     return tuple(shlex.split(stripped))
 
 
-def with_stage2_tactile_override(extra_args: tuple[str, ...], tactile: bool = False) -> tuple[str, ...]:
+def with_tactile_overrides(extra_args: tuple[str, ...], tactile: bool = False) -> tuple[str, ...]:
     if not tactile:
         return extra_args
-    if any(arg.startswith("task.env.hora.useTactile=") for arg in extra_args):
-        return extra_args
-    return (*extra_args, "task.env.hora.useTactile=True")
+    overrides = list(extra_args)
+    if not any(arg.startswith("task.env.hora.useTactileObs=") for arg in overrides):
+        overrides.append("task.env.hora.useTactileObs=True")
+    if not any(arg.startswith("task.env.hora.useTactileHist=") for arg in overrides):
+        overrides.append("task.env.hora.useTactileHist=True")
+    return tuple(overrides)
 
 
 def expected_cache_files(config_path: Path = TASK_CONFIG_PATH) -> tuple[str, ...]:
@@ -363,7 +375,17 @@ def check_stage1_exists(run_name: str, volume_path: str = VOLUME_PATH):
     if not os.path.exists(best_path):
         raise RuntimeError(
             f"Stage 1 checkpoint not found at {best_path}. "
-            f"Run stage 1 first: modal run modal_train.py --run-name {run_name} --stage 1"
+            f"Run stage 1 first: modal run modal_train.py::main --run-name {run_name} --stage 1"
+        )
+
+
+def check_stage2_exists(run_name: str, volume_path: str = VOLUME_PATH):
+    """Ensure stage 2 best checkpoint is present before starting stage 3."""
+    best_path = get_stage_best_checkpoint_volume_path(run_name, stage=2, volume_path=volume_path)
+    if not os.path.exists(best_path):
+        raise RuntimeError(
+            f"Stage 2 checkpoint not found at {best_path}. "
+            f"Run stage 2 first: modal run modal_train.py::main --run-name {run_name} --stage 2"
         )
 
 
@@ -398,7 +420,35 @@ def build_stage2_command(
         "train.ppo.priv_info=True", "train.ppo.proprio_adapt=True",
         f"train.ppo.output_name={get_output_name(run_name)}",
         f"checkpoint={get_stage_best_checkpoint_relpath(get_output_name(run_name), 1)}",
-        *with_stage2_tactile_override(extra_args, tactile=tactile),
+        *with_tactile_overrides(extra_args, tactile=tactile),
+    ]
+
+
+def build_stage3_command(
+    run_name: str,
+    seed: int = 0,
+    extra_args: tuple[str, ...] = (),
+    object_type: str = "custom_btg13_mean",
+) -> list[str]:
+    return [
+        CONDA_PYTHON, "train.py",
+        f"task={DEFAULT_TASK_NAME}", "headless=True",
+        f"seed={seed}",
+        "task.env.numEnvs=4096",
+        "task.env.forceScale=0.0", "task.env.randomForceProbScalar=0.0",
+        "task.env.randomization.randomizeScale=False",
+        "task.env.randomization.jointNoiseScale=0.0",
+        "task.env.baseObjScale=1.0",
+        "task.env.randomization.graspInitScale=0.8",
+        "task.env.reset_height_threshold=0.6",
+        "train.algo=ProprioAdapt",
+        f"task.env.object.type={object_type}",
+        "train.ppo.priv_info=True", "train.ppo.proprio_adapt=True",
+        "train.ppo.nn_dir=stage3_nn",
+        "train.ppo.wandb_group=stage3",
+        f"train.ppo.output_name={get_output_name(run_name)}",
+        f"checkpoint={get_stage_best_checkpoint_relpath(get_output_name(run_name), 2)}",
+        *extra_args,
     ]
 
 
@@ -458,6 +508,31 @@ def _run_with_periodic_commits(cmd: list[str]):
         raise subprocess.CalledProcessError(returncode, cmd)
 
 
+def build_eval_sweep_command(
+    manifest: str,
+    output_dir: str = "",
+    dry_run: bool = False,
+) -> list[str]:
+    cmd = [
+        CONDA_PYTHON,
+        "scripts/eval_object_sweep.py",
+        manifest,
+        "--python",
+        CONDA_PYTHON,
+    ]
+    if output_dir:
+        cmd.extend(["--output-dir", output_dir])
+    if dry_run:
+        cmd.append("--dry-run")
+    return cmd
+
+
+def _run_eval_sweep(manifest: str, output_dir: str = "", dry_run: bool = False):
+    setup_project_symlinks()
+    cmd = build_eval_sweep_command(manifest, output_dir=output_dir, dry_run=dry_run)
+    _run_with_periodic_commits(cmd)
+
+
 def _run_stage(stage: int, run_name: str, seed: int = 0, extra_args: tuple[str, ...] = (), tactile: bool = False):
     setup_project_symlinks()
     if stage == 1:
@@ -467,6 +542,10 @@ def _run_stage(stage: int, run_name: str, seed: int = 0, extra_args: tuple[str, 
         check_stage1_exists(run_name)
         check_no_overwrite(run_name, stage=2)
         cmd = build_stage2_command(run_name, seed=seed, extra_args=extra_args, tactile=tactile)
+    elif stage == 3:
+        check_stage2_exists(run_name)
+        check_no_overwrite(run_name, stage=3)
+        cmd = build_stage3_command(run_name, seed=seed, extra_args=extra_args)
     else:
         raise ValueError(f"Unsupported stage: {stage}")
     _run_with_periodic_commits(cmd)
@@ -475,16 +554,31 @@ def _run_stage(stage: int, run_name: str, seed: int = 0, extra_args: tuple[str, 
 def get_stage_remote_functions(runtime_profile: str = DEFAULT_RUNTIME_PROFILE):
     get_runtime_profile(runtime_profile)
     if runtime_profile == T4_STABLE_PROFILE:
-        return train_stage1_remote, train_stage2_remote
+        return train_stage1_remote, train_stage2_remote, train_stage3_remote
     if runtime_profile == A100_PROBE_PROFILE:
-        return train_stage1_a100_probe_remote, train_stage2_a100_probe_remote
+        return train_stage1_a100_probe_remote, train_stage2_a100_probe_remote, train_stage3_a100_probe_remote
     if runtime_profile == A100_COMPAT_PROFILE:
-        return train_stage1_a100_compat_remote, train_stage2_a100_compat_remote
+        return train_stage1_a100_compat_remote, train_stage2_a100_compat_remote, train_stage3_a100_compat_remote
     if runtime_profile == H100_STABLE_PROFILE:
-        return train_stage1_h100_stable_remote, train_stage2_h100_stable_remote
+        return train_stage1_h100_stable_remote, train_stage2_h100_stable_remote, train_stage3_h100_stable_remote
     if runtime_profile == H100_PROBE_PROFILE:
-        return train_stage1_h100_probe_remote, train_stage2_h100_probe_remote
-    return train_stage1_h100_compat_remote, train_stage2_h100_compat_remote
+        return train_stage1_h100_probe_remote, train_stage2_h100_probe_remote, train_stage3_h100_probe_remote
+    return train_stage1_h100_compat_remote, train_stage2_h100_compat_remote, train_stage3_h100_compat_remote
+
+
+def get_eval_sweep_remote_function(runtime_profile: str = DEFAULT_RUNTIME_PROFILE):
+    get_runtime_profile(runtime_profile)
+    if runtime_profile == T4_STABLE_PROFILE:
+        return eval_sweep_t4_stable_remote
+    if runtime_profile == A100_PROBE_PROFILE:
+        return eval_sweep_a100_probe_remote
+    if runtime_profile == A100_COMPAT_PROFILE:
+        return eval_sweep_a100_compat_remote
+    if runtime_profile == H100_STABLE_PROFILE:
+        return eval_sweep_h100_stable_remote
+    if runtime_profile == H100_PROBE_PROFILE:
+        return eval_sweep_h100_probe_remote
+    return eval_sweep_h100_compat_remote
 
 
 def run_requested_stages(
@@ -495,18 +589,22 @@ def run_requested_stages(
     runtime_profile: str = DEFAULT_RUNTIME_PROFILE,
     tactile: bool = False,
 ):
-    if stage not in ("1", "2", "both"):
+    if stage not in ("1", "2", "3", "both", "all"):
         raise ValueError(f"Unsupported stage selection: {stage}")
     profile = get_runtime_profile(runtime_profile)
-    stage1_remote, stage2_remote = get_stage_remote_functions(profile.name)
+    stage1_remote, stage2_remote, stage3_remote = get_stage_remote_functions(profile.name)
 
-    if stage in ("1", "both"):
+    if stage in ("1", "both", "all"):
         print(f"[hora] Starting stage 1 training: {run_name} [{profile.name}]")
         stage1_remote.remote(run_name, seed, extra_args)
 
-    if stage in ("2", "both"):
+    if stage in ("2", "both", "all"):
         print(f"[hora] Starting stage 2 training: {run_name} [{profile.name}]")
-        stage2_remote.remote(run_name, seed, with_stage2_tactile_override(extra_args, tactile=tactile))
+        stage2_remote.remote(run_name, seed, with_tactile_overrides(extra_args, tactile=tactile))
+
+    if stage in ("3", "all"):
+        print(f"[hora] Starting stage 3 BTG13 fine-tuning: {run_name} [{profile.name}]")
+        stage3_remote.remote(run_name, seed, with_tactile_overrides(extra_args, tactile=tactile))
 
     print(f"[hora] Done. Outputs on volume at /vol/outputs/{get_output_name(run_name)}/")
 
@@ -570,6 +668,20 @@ def train_stage2_remote(run_name: str, seed: int = 0, extra_args: tuple[str, ...
 @app.function(**_modal_function_kwargs(
     volumes={VOLUME_PATH: volume},
     timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[T4_STABLE_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[T4_STABLE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[T4_STABLE_PROFILE].function_env,
+))
+def train_stage3_remote(run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()):
+    """Stage 3: Fine-tune Stage 2 on BTG13."""
+    emit_runtime_diagnostics(T4_STABLE_PROFILE)
+    _run_stage(3, run_name, seed=seed, extra_args=extra_args)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
     image=RUNTIME_PROFILES[A100_PROBE_PROFILE].image,
     secrets=function_secrets,
     gpu=RUNTIME_PROFILES[A100_PROBE_PROFILE].gpu,
@@ -593,6 +705,20 @@ def train_stage2_a100_probe_remote(run_name: str, seed: int = 0, extra_args: tup
     """Stage 2 on the current image with an explicit A100 for diagnostics."""
     emit_runtime_diagnostics(A100_PROBE_PROFILE)
     _run_stage(2, run_name, seed=seed, extra_args=extra_args)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[A100_PROBE_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[A100_PROBE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[A100_PROBE_PROFILE].function_env,
+))
+def train_stage3_a100_probe_remote(run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()):
+    """Stage 3 on the current image with an explicit A100 for diagnostics."""
+    emit_runtime_diagnostics(A100_PROBE_PROFILE)
+    _run_stage(3, run_name, seed=seed, extra_args=extra_args)
 
 
 @app.function(**_modal_function_kwargs(
@@ -626,6 +752,20 @@ def train_stage2_a100_compat_remote(run_name: str, seed: int = 0, extra_args: tu
 @app.function(**_modal_function_kwargs(
     volumes={VOLUME_PATH: volume},
     timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[A100_COMPAT_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[A100_COMPAT_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[A100_COMPAT_PROFILE].function_env,
+))
+def train_stage3_a100_compat_remote(run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()):
+    """Stage 3 on the alternate A100 compatibility image."""
+    emit_runtime_diagnostics(A100_COMPAT_PROFILE)
+    _run_stage(3, run_name, seed=seed, extra_args=extra_args)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
     image=RUNTIME_PROFILES[H100_STABLE_PROFILE].image,
     secrets=function_secrets,
     gpu=RUNTIME_PROFILES[H100_STABLE_PROFILE].gpu,
@@ -649,6 +789,20 @@ def train_stage2_h100_stable_remote(run_name: str, seed: int = 0, extra_args: tu
     """Stage 2 on the validated H100 stable path."""
     emit_runtime_diagnostics(H100_STABLE_PROFILE)
     _run_stage(2, run_name, seed=seed, extra_args=extra_args)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[H100_STABLE_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[H100_STABLE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[H100_STABLE_PROFILE].function_env,
+))
+def train_stage3_h100_stable_remote(run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()):
+    """Stage 3 on the validated H100 stable path."""
+    emit_runtime_diagnostics(H100_STABLE_PROFILE)
+    _run_stage(3, run_name, seed=seed, extra_args=extra_args)
 
 
 @app.function(**_modal_function_kwargs(
@@ -682,6 +836,20 @@ def train_stage2_h100_probe_remote(run_name: str, seed: int = 0, extra_args: tup
 @app.function(**_modal_function_kwargs(
     volumes={VOLUME_PATH: volume},
     timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[H100_PROBE_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[H100_PROBE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[H100_PROBE_PROFILE].function_env,
+))
+def train_stage3_h100_probe_remote(run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()):
+    """Stage 3 on the current image with an explicit H100 for diagnostics."""
+    emit_runtime_diagnostics(H100_PROBE_PROFILE)
+    _run_stage(3, run_name, seed=seed, extra_args=extra_args)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
     image=RUNTIME_PROFILES[H100_COMPAT_PROFILE].image,
     secrets=function_secrets,
     gpu=RUNTIME_PROFILES[H100_COMPAT_PROFILE].gpu,
@@ -707,6 +875,124 @@ def train_stage2_h100_compat_remote(run_name: str, seed: int = 0, extra_args: tu
     _run_stage(2, run_name, seed=seed, extra_args=extra_args)
 
 
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[H100_COMPAT_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[H100_COMPAT_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[H100_COMPAT_PROFILE].function_env,
+))
+def train_stage3_h100_compat_remote(run_name: str, seed: int = 0, extra_args: tuple[str, ...] = ()):
+    """Stage 3 on the alternate H100 compatibility image."""
+    emit_runtime_diagnostics(H100_COMPAT_PROFILE)
+    _run_stage(3, run_name, seed=seed, extra_args=extra_args)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[T4_STABLE_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[T4_STABLE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[T4_STABLE_PROFILE].function_env,
+))
+def eval_sweep_t4_stable_remote(manifest: str, output_dir: str = "", dry_run: bool = False):
+    """Run a manifest-driven evaluation sweep on T4."""
+    emit_runtime_diagnostics(T4_STABLE_PROFILE)
+    _run_eval_sweep(manifest, output_dir=output_dir, dry_run=dry_run)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[A100_PROBE_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[A100_PROBE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[A100_PROBE_PROFILE].function_env,
+))
+def eval_sweep_a100_probe_remote(manifest: str, output_dir: str = "", dry_run: bool = False):
+    """Run a manifest-driven evaluation sweep on the current A100 image."""
+    emit_runtime_diagnostics(A100_PROBE_PROFILE)
+    _run_eval_sweep(manifest, output_dir=output_dir, dry_run=dry_run)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[A100_COMPAT_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[A100_COMPAT_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[A100_COMPAT_PROFILE].function_env,
+))
+def eval_sweep_a100_compat_remote(manifest: str, output_dir: str = "", dry_run: bool = False):
+    """Run a manifest-driven evaluation sweep on the alternate A100 compatibility image."""
+    emit_runtime_diagnostics(A100_COMPAT_PROFILE)
+    _run_eval_sweep(manifest, output_dir=output_dir, dry_run=dry_run)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[H100_STABLE_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[H100_STABLE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[H100_STABLE_PROFILE].function_env,
+))
+def eval_sweep_h100_stable_remote(manifest: str, output_dir: str = "", dry_run: bool = False):
+    """Run a manifest-driven evaluation sweep on the validated H100 image."""
+    emit_runtime_diagnostics(H100_STABLE_PROFILE)
+    _run_eval_sweep(manifest, output_dir=output_dir, dry_run=dry_run)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[H100_PROBE_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[H100_PROBE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[H100_PROBE_PROFILE].function_env,
+))
+def eval_sweep_h100_probe_remote(manifest: str, output_dir: str = "", dry_run: bool = False):
+    """Run a manifest-driven evaluation sweep on the current H100 image."""
+    emit_runtime_diagnostics(H100_PROBE_PROFILE)
+    _run_eval_sweep(manifest, output_dir=output_dir, dry_run=dry_run)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[H100_COMPAT_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[H100_COMPAT_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[H100_COMPAT_PROFILE].function_env,
+))
+def eval_sweep_h100_compat_remote(manifest: str, output_dir: str = "", dry_run: bool = False):
+    """Run a manifest-driven evaluation sweep on the alternate H100 compatibility image."""
+    emit_runtime_diagnostics(H100_COMPAT_PROFILE)
+    _run_eval_sweep(manifest, output_dir=output_dir, dry_run=dry_run)
+
+
+@app.local_entrypoint()
+def eval_sweep(
+    manifest: str,
+    output_dir: str = "",
+    runtime_profile: str = DEFAULT_RUNTIME_PROFILE,
+    dry_run: bool = False,
+):
+    """
+    Run a manifest-driven eval sweep on Modal.
+
+    Args:
+        manifest: Repo-relative manifest path, e.g. configs/eval_sweeps/btg13_tactile04201119_10seeds.json.
+        output_dir: Optional output directory. Defaults to outputs/eval_sweeps/<manifest>_<timestamp>/ on the volume.
+        runtime_profile: Modal runtime profile. One of t4_stable, a100_probe, a100_compat, h100_stable, h100_probe, h100_compat.
+        dry_run: Prepare cases without running Isaac Gym evals.
+    """
+    remote_fn = get_eval_sweep_remote_function(runtime_profile)
+    remote_fn.remote(manifest, output_dir, dry_run)
+
+
 @app.local_entrypoint()
 def main(
     run_name: str,
@@ -722,10 +1008,10 @@ def main(
     Args:
         run_name: Name for this training run (used in output paths and wandb).
         seed: Random seed (default: 0).
-        stage: Which stage to train — "1", "2", or "both" (default).
+        stage: Which stage to train — "1", "2", "3", "both", or "all" (default: "both").
         overrides: Extra Hydra overrides passed to train.py.
         runtime_profile: Modal runtime profile. One of t4_stable, a100_probe, a100_compat, h100_stable, h100_probe, h100_compat.
-        tactile: When true, append task.env.hora.useTactile=True to stage 2 only.
+        tactile: When true, append the split tactile obs/history flags to stages 2 and 3.
     """
     run_requested_stages(
         run_name,

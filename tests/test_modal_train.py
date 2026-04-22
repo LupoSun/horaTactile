@@ -11,16 +11,22 @@ def test_modal_train_module_exports_expected_entrypoints():
     assert modal_train.DEFAULT_RUNTIME_PROFILE == modal_train.T4_STABLE_PROFILE
     assert hasattr(modal_train.train_stage1_remote, "remote")
     assert hasattr(modal_train.train_stage2_remote, "remote")
+    assert hasattr(modal_train.train_stage3_remote, "remote")
     assert hasattr(modal_train.train_stage1_a100_probe_remote, "remote")
     assert hasattr(modal_train.train_stage2_a100_probe_remote, "remote")
+    assert hasattr(modal_train.train_stage3_a100_probe_remote, "remote")
     assert hasattr(modal_train.train_stage1_a100_compat_remote, "remote")
     assert hasattr(modal_train.train_stage2_a100_compat_remote, "remote")
+    assert hasattr(modal_train.train_stage3_a100_compat_remote, "remote")
     assert hasattr(modal_train.train_stage1_h100_stable_remote, "remote")
     assert hasattr(modal_train.train_stage2_h100_stable_remote, "remote")
+    assert hasattr(modal_train.train_stage3_h100_stable_remote, "remote")
     assert hasattr(modal_train.train_stage1_h100_probe_remote, "remote")
     assert hasattr(modal_train.train_stage2_h100_probe_remote, "remote")
+    assert hasattr(modal_train.train_stage3_h100_probe_remote, "remote")
     assert hasattr(modal_train.train_stage1_h100_compat_remote, "remote")
     assert hasattr(modal_train.train_stage2_h100_compat_remote, "remote")
+    assert hasattr(modal_train.train_stage3_h100_compat_remote, "remote")
 
 
 def test_runtime_profiles_are_explicit_and_validated():
@@ -53,16 +59,18 @@ def test_parse_overrides_respects_shell_quoting():
     )
 
 
-def test_with_stage2_tactile_override_appends_tactile_once():
-    assert modal_train.with_stage2_tactile_override(("train.ppo.max_agent_steps=1024",), tactile=False) == (
+def test_with_tactile_overrides_appends_tactile_once():
+    assert modal_train.with_tactile_overrides(("train.ppo.max_agent_steps=1024",), tactile=False) == (
         "train.ppo.max_agent_steps=1024",
     )
-    assert modal_train.with_stage2_tactile_override(("train.ppo.max_agent_steps=1024",), tactile=True) == (
+    assert modal_train.with_tactile_overrides(("train.ppo.max_agent_steps=1024",), tactile=True) == (
         "train.ppo.max_agent_steps=1024",
-        "task.env.hora.useTactile=True",
+        "task.env.hora.useTactileObs=True",
+        "task.env.hora.useTactileHist=True",
     )
-    assert modal_train.with_stage2_tactile_override(("task.env.hora.useTactile=False",), tactile=True) == (
-        "task.env.hora.useTactile=False",
+    assert modal_train.with_tactile_overrides(("task.env.hora.useTactileObs=False",), tactile=True) == (
+        "task.env.hora.useTactileObs=False",
+        "task.env.hora.useTactileHist=True",
     )
 
 
@@ -112,11 +120,14 @@ def test_checkpoint_checks_use_stage_specific_best_files(tmp_path):
     volume_dir = tmp_path / "vol"
     stage1_best = Path(modal_train.get_stage_best_checkpoint_volume_path("exp", 1, str(volume_dir)))
     stage2_best = Path(modal_train.get_stage_best_checkpoint_volume_path("exp", 2, str(volume_dir)))
+    stage3_best = Path(modal_train.get_stage_best_checkpoint_volume_path("exp", 3, str(volume_dir)))
     stage1_best.parent.mkdir(parents=True, exist_ok=True)
     stage2_best.parent.mkdir(parents=True, exist_ok=True)
+    stage3_best.parent.mkdir(parents=True, exist_ok=True)
 
     modal_train.check_no_overwrite("exp", 1, str(volume_dir))
     modal_train.check_no_overwrite("exp", 2, str(volume_dir))
+    modal_train.check_no_overwrite("exp", 3, str(volume_dir))
 
     (stage2_best.parent / "best.pth").write_text("wrong-stage2-name")
     modal_train.check_no_overwrite("exp", 2, str(volume_dir))
@@ -128,6 +139,10 @@ def test_checkpoint_checks_use_stage_specific_best_files(tmp_path):
     stage2_best.write_text("stage2")
     with pytest.raises(RuntimeError):
         modal_train.check_no_overwrite("exp", 2, str(volume_dir))
+
+    stage3_best.write_text("stage3")
+    with pytest.raises(RuntimeError):
+        modal_train.check_no_overwrite("exp", 3, str(volume_dir))
 
 
 def test_check_stage1_exists_requires_best_pth(tmp_path):
@@ -141,9 +156,21 @@ def test_check_stage1_exists_requires_best_pth(tmp_path):
     modal_train.check_stage1_exists("demo", str(volume_dir))
 
 
+def test_check_stage2_exists_requires_model_best(tmp_path):
+    volume_dir = tmp_path / "vol"
+    with pytest.raises(RuntimeError):
+        modal_train.check_stage2_exists("demo", str(volume_dir))
+
+    stage2_best = Path(modal_train.get_stage_best_checkpoint_volume_path("demo", 2, str(volume_dir)))
+    stage2_best.parent.mkdir(parents=True, exist_ok=True)
+    stage2_best.write_text("ready")
+    modal_train.check_stage2_exists("demo", str(volume_dir))
+
+
 def test_build_stage_commands_include_journal_defaults():
     stage1_cmd = modal_train.build_stage1_command("demo", seed=7, extra_args=("task.env.numEnvs=64",))
     stage2_cmd = modal_train.build_stage2_command("demo", seed=11, extra_args=("train.ppo.max_agent_steps=1024",))
+    stage3_cmd = modal_train.build_stage3_command("demo", seed=13, extra_args=("train.ppo.max_agent_steps=2048",))
 
     assert stage1_cmd[:2] == [modal_train.CONDA_PYTHON, "train.py"]
     assert "task=AllegroHandHora" in stage1_cmd
@@ -161,10 +188,21 @@ def test_build_stage_commands_include_journal_defaults():
     assert "checkpoint=outputs/AllegroHandHora/demo/stage1_nn/best.pth" in stage2_cmd
     assert stage2_cmd[-1] == "train.ppo.max_agent_steps=1024"
 
+    assert "train.algo=ProprioAdapt" in stage3_cmd
+    assert "task.env.numEnvs=4096" in stage3_cmd
+    assert "task.env.object.type=custom_btg13_mean" in stage3_cmd
+    assert "task.env.forceScale=0.0" in stage3_cmd
+    assert "task.env.randomization.jointNoiseScale=0.0" in stage3_cmd
+    assert "train.ppo.nn_dir=stage3_nn" in stage3_cmd
+    assert "train.ppo.wandb_group=stage3" in stage3_cmd
+    assert "checkpoint=outputs/AllegroHandHora/demo/stage2_nn/model_best.ckpt" in stage3_cmd
+    assert stage3_cmd[-1] == "train.ppo.max_agent_steps=2048"
+
 
 def test_build_stage2_command_can_enable_tactile():
     stage2_cmd = modal_train.build_stage2_command("demo", tactile=True)
-    assert "task.env.hora.useTactile=True" in stage2_cmd
+    assert "task.env.hora.useTactileObs=True" in stage2_cmd
+    assert "task.env.hora.useTactileHist=True" in stage2_cmd
 
 
 def test_run_requested_stages_dispatches_requested_remote_calls(monkeypatch):
@@ -178,6 +216,11 @@ def test_run_requested_stages_dispatches_requested_remote_calls(monkeypatch):
         modal_train,
         "train_stage2_remote",
         SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("stage2", run_name, seed, extra_args))),
+    )
+    monkeypatch.setattr(
+        modal_train,
+        "train_stage3_remote",
+        SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("stage3", run_name, seed, extra_args))),
     )
 
     modal_train.run_requested_stages(
@@ -206,6 +249,11 @@ def test_run_requested_stages_uses_selected_a100_profile(monkeypatch):
         "train_stage2_a100_probe_remote",
         SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("probe-stage2", run_name, seed, extra_args))),
     )
+    monkeypatch.setattr(
+        modal_train,
+        "train_stage3_a100_probe_remote",
+        SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("probe-stage3", run_name, seed, extra_args))),
+    )
 
     modal_train.run_requested_stages(
         "demo",
@@ -233,6 +281,11 @@ def test_run_requested_stages_uses_selected_h100_profile(monkeypatch):
         "train_stage2_h100_stable_remote",
         SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("h100-stable-stage2", run_name, seed, extra_args))),
     )
+    monkeypatch.setattr(
+        modal_train,
+        "train_stage3_h100_stable_remote",
+        SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("h100-stable-stage3", run_name, seed, extra_args))),
+    )
 
     modal_train.run_requested_stages(
         "demo",
@@ -248,7 +301,7 @@ def test_run_requested_stages_uses_selected_h100_profile(monkeypatch):
     ]
 
 
-def test_run_requested_stages_applies_tactile_only_to_stage2(monkeypatch):
+def test_run_requested_stages_applies_tactile_to_stage2(monkeypatch):
     calls = []
     monkeypatch.setattr(
         modal_train,
@@ -259,6 +312,11 @@ def test_run_requested_stages_applies_tactile_only_to_stage2(monkeypatch):
         modal_train,
         "train_stage2_h100_stable_remote",
         SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("stage2", run_name, seed, extra_args))),
+    )
+    monkeypatch.setattr(
+        modal_train,
+        "train_stage3_h100_stable_remote",
+        SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("stage3", run_name, seed, extra_args))),
     )
 
     modal_train.run_requested_stages(
@@ -272,7 +330,52 @@ def test_run_requested_stages_applies_tactile_only_to_stage2(monkeypatch):
 
     assert calls == [
         ("stage1", "demo", 6, ("train.ppo.max_agent_steps=1024",)),
-        ("stage2", "demo", 6, ("train.ppo.max_agent_steps=1024", "task.env.hora.useTactile=True")),
+        (
+            "stage2",
+            "demo",
+            6,
+            (
+                "train.ppo.max_agent_steps=1024",
+                "task.env.hora.useTactileObs=True",
+                "task.env.hora.useTactileHist=True",
+            ),
+        ),
+    ]
+
+
+def test_run_requested_stages_can_dispatch_stage3(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        modal_train,
+        "train_stage1_a100_compat_remote",
+        SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("stage1", run_name, seed, extra_args))),
+    )
+    monkeypatch.setattr(
+        modal_train,
+        "train_stage2_a100_compat_remote",
+        SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("stage2", run_name, seed, extra_args))),
+    )
+    monkeypatch.setattr(
+        modal_train,
+        "train_stage3_a100_compat_remote",
+        SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("stage3", run_name, seed, extra_args))),
+    )
+
+    modal_train.run_requested_stages(
+        "demo",
+        seed=8,
+        stage="3",
+        extra_args=("task.env.hora.useTactileObs=True", "task.env.hora.useTactileHist=True"),
+        runtime_profile=modal_train.A100_COMPAT_PROFILE,
+    )
+
+    assert calls == [
+        (
+            "stage3",
+            "demo",
+            8,
+            ("task.env.hora.useTactileObs=True", "task.env.hora.useTactileHist=True"),
+        ),
     ]
 
 
