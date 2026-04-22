@@ -36,6 +36,8 @@ ppo:
   save_best_after: 0
   save_frequency: 500
   max_agent_steps: 1_500_000_000
+  nn_dir: stage2_nn
+  wandb_group: ''
   # hora setting
   priv_info: False
   priv_info_dim: 9

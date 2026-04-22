@@ -2,7 +2,11 @@ import os
 
 from omegaconf import OmegaConf
 
-from hora.utils.checkpoint_utils import get_algo_best_checkpoint_relpath, get_stage_best_checkpoint_relpath
+from hora.utils.checkpoint_utils import (
+    get_algo_best_checkpoint_relpath,
+    get_configured_best_checkpoint_relpath,
+    get_stage_best_checkpoint_relpath,
+)
 from hora.utils.misc import git_diff_config, git_hash, write_git_diff_patch, write_run_metadata
 
 
@@ -40,9 +44,15 @@ def test_checkpoint_relpaths_match_stage_specific_artifacts():
     assert get_stage_best_checkpoint_relpath(output_name, 2) == os.path.join(
         "outputs", output_name, "stage2_nn", "model_best.ckpt"
     )
+    assert get_stage_best_checkpoint_relpath(output_name, 3) == os.path.join(
+        "outputs", output_name, "stage3_nn", "model_best.ckpt"
+    )
     assert get_algo_best_checkpoint_relpath(output_name, "PPO") == os.path.join(
         "outputs", output_name, "stage1_nn", "best.pth"
     )
     assert get_algo_best_checkpoint_relpath(output_name, "ProprioAdapt") == os.path.join(
         "outputs", output_name, "stage2_nn", "model_best.ckpt"
+    )
+    assert get_configured_best_checkpoint_relpath(output_name, "ProprioAdapt", "stage3_nn") == os.path.join(
+        "outputs", output_name, "stage3_nn", "model_best.ckpt"
     )

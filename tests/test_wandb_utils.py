@@ -136,6 +136,7 @@ def test_init_wandb_run_skips_wandb_when_disabled(monkeypatch):
 def test_stage_wandb_name_suffixes_known_stages():
     assert wandb_utils.stage_wandb_name("AllegroHandHora/demo", "stage1") == "AllegroHandHora/demo_s1"
     assert wandb_utils.stage_wandb_name("AllegroHandHora/demo", "stage2") == "AllegroHandHora/demo_s2"
+    assert wandb_utils.stage_wandb_name("AllegroHandHora/demo", "stage3") == "AllegroHandHora/demo_s3"
     assert wandb_utils.stage_wandb_name("AllegroHandHora/demo", "eval") == "AllegroHandHora/demo"
 
 

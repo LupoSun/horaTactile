@@ -7,10 +7,22 @@ export WANDB_API_KEY=your_key_here
 # baseline
 modal run --detach modal_train.py::main --run-name baseline04211300 --runtime-profile a100_compat --stage 1
 modal run --detach modal_train.py::main --run-name baseline04211300 --runtime-profile a100_compat --stage 2
+modal run --detach modal_train.py::main \
+--run-name baseline04201135 \
+--runtime-profile a100_compat \
+--stage 3 \
+--overrides "train.ppo.max_agent_steps=100_000_000"
+
 
 # tactile
 modal run --detach modal_train.py::main --run-name tactile04211301 --runtime-profile a100_compat --stage 1 --overrides "task.env.hora.useTactileObs=True"
 modal run --detach modal_train.py::main --run-name tactile04211301 --runtime-profile a100_compat --stage 2 --overrides "task.env.hora.useTactileHist=True task.env.hora.useTactileObs=True"
+modal run --detach modal_train.py::main \
+--run-name tactile04201119 \
+--runtime-profile a100_compat \
+--stage 3 \
+--tactile \
+--overrides "train.ppo.max_agent_steps=100_000_000"
 
 # sweep
 modal run --detach modal_train.py::eval_sweep \

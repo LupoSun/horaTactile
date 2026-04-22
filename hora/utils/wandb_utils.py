@@ -17,7 +17,7 @@ def get_wandb_config(full_config):
 
 
 def stage_wandb_name(name: str, group: str) -> str:
-    suffix = {"stage1": "s1", "stage2": "s2"}.get(group)
+    suffix = {"stage1": "s1", "stage2": "s2", "stage3": "s3"}.get(group)
     if not suffix:
         return name
     return f"{name}_{suffix}"
