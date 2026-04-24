@@ -135,11 +135,6 @@ On this custom BTG geometry family, vanilla HORA Stage 2 transfers substantially
 
 The tactile checkpoints load and run correctly, including the release-specific tactile observation/history dimensions, but they do not improve object-rotation transfer on this benchmark. The evidence is now broader than one mesh: it covers 12 additional BTG geometries, 5 sizes per geometry, and 10 seeds per condition.
 
-## Issues Encountered Along The Way
-- The first detached launcher attempt failed because `scripts/isaac_wsl_env.sh` was sourced inside a subshell in the tmux launcher, so the exported `LD_LIBRARY_PATH` did not persist into `python`.
-- That caused Isaac Gym to fall back to CPU with:
-  - `Failed to create a PhysX CUDA Context Manager. Falling back to CPU.`
-- The launcher was patched to source the WSL env script in the current shell context, and the sweep was relaunched successfully.
 
 ## Notes
 - This journal is intended to hold the broader post-BTG13 benchmark record once the remaining-node sweep is launched and completed.
