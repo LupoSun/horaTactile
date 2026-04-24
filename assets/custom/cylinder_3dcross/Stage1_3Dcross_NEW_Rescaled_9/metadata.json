@@ -1,0 +1,51 @@
+{
+  "name": "Stage1_3Dcross_NEW_Rescaled_9",
+  "source_file": "Stage1_3Dcross_NEW_Rescaled_9.stl",
+  "canonical_scale_factor": 56.144809904628005,
+  "source_unit_scale": 0.001,
+  "centroid_offset": [
+    47.988568713469455,
+    48.001615995799334,
+    47.98396489351065
+  ],
+  "original_bbox": [
+    96.0,
+    96.000244140625,
+    96.0
+  ],
+  "normalised_bbox": [
+    1.7098641915979975,
+    1.7098685400075015,
+    1.7098641915979973
+  ],
+  "export_bbox": [
+    0.096,
+    0.09600024414062501,
+    0.096
+  ],
+  "export_bbox_scale_factor": 0.05614480990462801,
+  "export_bbox_target_size": null,
+  "export_bbox_target_axis": null,
+  "volume_m3": 483863.2991034501,
+  "surface_area_m2": 39607.47623316247,
+  "export_volume_m3": 0.00048386329910345014,
+  "export_surface_area_m2": 0.03960747623316248,
+  "n_faces": 5614,
+  "n_vertices": 2809,
+  "is_watertight": true,
+  "mass_kg": 0.05,
+  "inertia": {
+    "ixx": 4.986379191476386e-05,
+    "iyy": 4.986299256789726e-05,
+    "izz": 4.985084151326316e-05,
+    "ixy": 4.722430813685422e-09,
+    "ixz": -4.021696610504122e-09,
+    "iyz": 7.361610107372733e-10
+  },
+  "point_cloud_counts": [
+    100,
+    1024
+  ],
+  "point_cloud_space": "unit_sphere",
+  "urdf_file": "Stage1_3Dcross_NEW_Rescaled_9.urdf"
+}
