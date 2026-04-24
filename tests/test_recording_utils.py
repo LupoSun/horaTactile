@@ -35,15 +35,17 @@ def test_build_recording_overrides_enables_camera_and_disables_eval_randomizatio
         checkpoint="outputs/AllegroHandHora/demo/stage2_nn/model_best.ckpt",
         stage=2,
         object_type="custom_btg13_mean",
-        use_tactile=True,
+        use_tactile_obs=True,
+        use_tactile_hist=True,
         num_envs=1,
         extra_overrides=("task.env.reset_height_threshold=0.6",),
     )
-    assert "task.enableCameraSensors=True" in overrides
+    assert "task.env.enableCameraSensors=True" in overrides
     assert "task.env.randomization.randomizeScale=False" in overrides
     assert "task.env.randomization.jointNoiseScale=0.0" in overrides
     assert "train.algo=ProprioAdapt" in overrides
-    assert "task.env.hora.useTactile=True" in overrides
+    assert "task.env.hora.useTactileObs=True" in overrides
+    assert "task.env.hora.useTactileHist=True" in overrides
     assert overrides[-1] == "task.env.reset_height_threshold=0.6"
 
 

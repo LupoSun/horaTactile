@@ -1,0 +1,57 @@
+{
+  "description": "Compare vanilla HORA Stage 2 with tactile04201119 Stage 1 and Stage 2 on the BTG13.",
+  "num_envs": 4096,
+  "max_evaluate_envs": 5000,
+  "seeds": [42, 43, 44, 45, 46],
+  "base_overrides": [
+    "task.env.reset_height_threshold=0.6",
+    "task.env.randomization.jointNoiseScale=0.0",
+    "task.env.baseObjScale=1.0",
+    "task.env.randomization.graspInitScale=0.8"
+  ],
+  "models": [
+    {
+      "name": "vanilla_stage1",
+      "checkpoint": "outputs/AllegroHandHora/baseline04201135/stage1_nn/model_best.ckpt",
+      "algo": "ProprioAdapt",
+      "use_tactile_obs": false,
+      "use_tactile_hist": false,
+      "priv_info": true,
+      "proprio_adapt": false
+    },
+    {
+      "name": "vanilla_stage2",
+      "checkpoint": "outputs/AllegroHandHora/baseline04201135/stage2_nn/model_best.ckpt",
+      "algo": "ProprioAdapt",
+      "use_tactile_obs": false,
+      "use_tactile_hist": false,
+      "priv_info": true,
+      "proprio_adapt": true
+    },
+    {
+      "name": "tactile04201119_stage1",
+      "checkpoint": "outputs/AllegroHandHora/tactile04201119/stage1_nn/model_best.ckpt",
+      "algo": "ProprioAdapt",
+      "use_tactile_obs": true,
+      "use_tactile_hist": false,
+      "priv_info": true,
+      "proprio_adapt": false
+    },
+    {
+      "name": "tactile04201119_stage2",
+      "checkpoint": "outputs/AllegroHandHora/tactile04201119/stage2_nn/model_best.ckpt",
+      "algo": "ProprioAdapt",
+      "use_tactile_obs": true,
+      "use_tactile_hist": true,
+      "priv_info": true,
+      "proprio_adapt": true
+    }
+  ],
+  "objects": [
+    {
+      "name": "btg13_mean",
+      "object_type": "custom_btg13_mean",
+      "size_longest_edge_m": 0.0871111111111111
+    }
+  ]
+}

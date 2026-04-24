@@ -56,9 +56,9 @@ class ProprioAdapt(object):
         self.sa_mean_std.train()
         # ---- Output Dir ----
         self.output_dir = output_dir
-        self.nn_dir = os.path.join(self.output_dir, 'stage2_nn')
+        self.nn_dir = os.path.join(self.output_dir, self.ppo_config.get('nn_dir', 'stage2_nn'))
         os.makedirs(self.nn_dir, exist_ok=True)
-        init_wandb_run(full_config, name=self.ppo_config['output_name'], group='stage2')
+        init_wandb_run(full_config, name=self.ppo_config['output_name'], group=self.ppo_config.get('wandb_group') or 'stage2')
         self.direct_info = {}
         # ---- Misc ----
         self.batch_size = self.num_actors
@@ -124,6 +124,13 @@ class ProprioAdapt(object):
             self.agent_steps += self.batch_size
 
             # ---- statistics
+            assert isinstance(info, dict), 'Info Should be a Dict'
+            self.direct_info = {}
+            for k, v in info.items():
+                # only log scalars
+                if isinstance(v, float) or isinstance(v, int) or (isinstance(v, torch.Tensor) and len(v.shape) == 0):
+                    self.direct_info[k] = v
+
             self.step_reward += r
             self.step_length += 1
             done_indices = done.nonzero(as_tuple=False)
@@ -169,6 +176,8 @@ class ProprioAdapt(object):
         cprint('careful, using non-strict matching', 'red', attrs=['bold'])
         self.model.load_state_dict(checkpoint['model'], strict=False)
         self.running_mean_std.load_state_dict(checkpoint['running_mean_std'])
+        if 'sa_mean_std' in checkpoint:
+            self.sa_mean_std.load_state_dict(checkpoint['sa_mean_std'])
 
     def restore_test(self, fn):
         if not fn:
