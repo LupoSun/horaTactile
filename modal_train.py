@@ -395,6 +395,7 @@ def build_auto_eval_manifest(
                 "use_tactile_obs": _override_bool(tactile_args, "task.env.hora.useTactileObs", default=False),
                 "use_tactile_hist": _override_bool(tactile_args, "task.env.hora.useTactileHist", default=False),
                 "use_shape_priv_info": True,
+                "env_use_shape_priv_info": False,
                 "use_extended_priv_info": True,
                 "priv_info_dim": 17,
                 "priv_info": True,
@@ -721,7 +722,7 @@ def _ensure_eval_pointcloud_sidecars(manifest: str):
     if not manifest_path.is_absolute():
         manifest_path = Path(PROJECT_DIR) / manifest_path
     data = json.loads(manifest_path.read_text())
-    if not any(model.get("use_shape_priv_info", False) for model in data.get("models", [])):
+    if not any(model.get("env_use_shape_priv_info", model.get("use_shape_priv_info", False)) for model in data.get("models", [])):
         return
 
     n_points = 1024

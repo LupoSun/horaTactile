@@ -90,6 +90,29 @@ def test_build_eval_command_supports_tactile_observation_release_mode():
     assert "checkpoint=outputs/AllegroHandHora/double_tactile_s1_2/stage1_nn/best.pth" in command
 
 
+def test_build_eval_command_can_disable_env_shape_sidecars_for_stage2():
+    manifest = {
+        "num_envs": 512,
+        "max_evaluate_envs": 2000,
+        "base_overrides": [],
+    }
+    model = {
+        "name": "shape_stage2",
+        "checkpoint": "outputs/AllegroHandHora/demo/stage2_nn/model_best.ckpt",
+        "algo": "ProprioAdapt",
+        "use_shape_priv_info": True,
+        "env_use_shape_priv_info": False,
+        "priv_info": True,
+        "proprio_adapt": True,
+    }
+    obj = {"name": "mean", "object_type": "custom_btg13_mean"}
+
+    command = build_eval_command(manifest, model, obj, seed=11, python_executable="/venv/bin/python")
+
+    assert "task.env.hora.useShapePrivInfo=False" in command
+    assert "train.ppo.use_shape_priv_info=True" in command
+
+
 def test_build_case_name_is_stable():
     model = {"name": "baseline"}
     obj = {"name": "mean"}

@@ -71,6 +71,8 @@ class ProprioAdapt(object):
         self.best_rewards = -10000
         self.agent_steps = 0
         self.max_agent_steps = self.ppo_config['max_agent_steps']
+        self.latent_loss_coef = self.ppo_config.get('adapt_latent_loss_coef', 1.0)
+        self.action_loss_coef = self.ppo_config.get('adapt_action_loss_coef', 1.0)
         # ---- Optim ----
         adapt_params = []
         for name, p in self.model.named_parameters():
@@ -82,6 +84,8 @@ class ProprioAdapt(object):
         # ---- Training Misc
         self.internal_counter = 0
         self.latent_loss_stat = 0
+        self.action_loss_stat = 0
+        self.adapt_loss_stat = 0
         self.loss_stat_cnt = 0
         batch_size = self.num_actors
         self.step_reward = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
@@ -113,16 +117,27 @@ class ProprioAdapt(object):
         while self.agent_steps < self.max_agent_steps:
             input_dict = {
                 'obs': self.running_mean_std(obs_dict['obs']).detach(),
-                'priv_info': obs_dict['priv_info'],
                 'proprio_hist': self.sa_mean_std(obs_dict['proprio_hist'].detach()),
             }
+            teacher_dict = {
+                'priv_info': obs_dict['priv_info'],
+            }
             if self.use_shape_priv_info:
-                input_dict['point_cloud'] = obs_dict['point_cloud']
+                teacher_dict['point_cloud'] = obs_dict['point_cloud']
             mu, _, _, e, e_gt = self.model._actor_critic(input_dict)
-            loss = ((e - e_gt.detach()) ** 2).mean()
+            with torch.no_grad():
+                e_gt = torch.tanh(self.model._encode_privileged(teacher_dict))
+                mu_gt = self.model.act_from_extrin(input_dict['obs'], e_gt)
+            latent_loss = ((e - e_gt) ** 2).mean()
+            action_loss = ((mu - mu_gt) ** 2).mean()
+            loss = self.latent_loss_coef * latent_loss + self.action_loss_coef * action_loss
             self.optim.zero_grad()
             loss.backward()
             self.optim.step()
+            self.latent_loss_stat += latent_loss.item()
+            self.action_loss_stat += action_loss.item()
+            self.adapt_loss_stat += loss.item()
+            self.loss_stat_cnt += 1
 
             mu = mu.detach()
             mu = torch.clamp(mu, -1.0, 1.0)
@@ -169,10 +184,18 @@ class ProprioAdapt(object):
         wandb.finish()
 
     def log_wandb(self):
+        denom = max(self.loss_stat_cnt, 1)
         stats = {
             'episode_rewards/step': self.mean_eps_reward.get_mean(),
             'episode_lengths/step': self.mean_eps_length.get_mean(),
+            'losses/latent_loss': self.latent_loss_stat / denom,
+            'losses/action_loss': self.action_loss_stat / denom,
+            'losses/adapt_loss': self.adapt_loss_stat / denom,
         }
+        self.latent_loss_stat = 0
+        self.action_loss_stat = 0
+        self.adapt_loss_stat = 0
+        self.loss_stat_cnt = 0
         for k, v in self.direct_info.items():
             stats[f'{k}/frame'] = v
         wandb.log(stats, step=self.agent_steps)

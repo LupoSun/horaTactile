@@ -163,6 +163,10 @@ class ActorCritic(nn.Module):
         shape_embedding = self.pointnet(obs_dict['point_cloud'])
         return torch.cat([phys_embedding, shape_embedding], dim=-1)
 
+    def act_from_extrin(self, obs, extrin):
+        x = self.actor_mlp(torch.cat([obs, extrin], dim=-1))
+        return self.mu(x)
+
     def forward(self, input_dict):
         prev_actions = input_dict.get('prev_actions', None)
         rst = self._actor_critic(input_dict)

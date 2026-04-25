@@ -119,6 +119,8 @@ def test_build_auto_eval_manifest_targets_btg_mean_stage2():
     assert manifest["models"][0]["checkpoint"] == "outputs/AllegroHandHora/demo/stage2_nn/model_best.ckpt"
     assert manifest["models"][0]["use_tactile_obs"] is False
     assert manifest["models"][0]["use_tactile_hist"] is True
+    assert manifest["models"][0]["use_shape_priv_info"] is True
+    assert manifest["models"][0]["env_use_shape_priv_info"] is False
     assert manifest["models"][0]["extra_overrides"] == [
         "task.env.hora.nPointCloudPts=100",
         "train.ppo.n_pointcloud_pts=100",
@@ -175,6 +177,35 @@ def test_eval_pointcloud_preflight_ignores_builtin_ball(monkeypatch, tmp_path):
     modal_train._ensure_eval_pointcloud_sidecars(str(manifest_path))
 
     assert loaded_assets == ["assets/custom/btg1_mean/BTG_1/BTG_1.urdf"]
+
+
+def test_eval_pointcloud_preflight_skips_stage2_sensor_eval(monkeypatch, tmp_path):
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        """
+{
+  "models": [
+    {
+      "use_shape_priv_info": true,
+      "env_use_shape_priv_info": false
+    }
+  ],
+  "objects": [
+    {"name": "btg1_mean", "object_type": "custom_btg1_mean"}
+  ]
+}
+"""
+    )
+
+    def fail_catalog(*args, **kwargs):
+        raise AssertionError("point-cloud preflight should not inspect assets")
+
+    monkeypatch.setattr(
+        "hora.utils.object_assets.build_object_asset_catalog",
+        fail_catalog,
+    )
+
+    modal_train._ensure_eval_pointcloud_sidecars(str(manifest_path))
 
 
 def test_expected_cache_files_match_default_config():

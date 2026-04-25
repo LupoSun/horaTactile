@@ -47,3 +47,5 @@ ppo:
   pointnet_units: [32, 32, 32]
   n_pointcloud_pts: 1024
   proprio_adapt: False
+  adapt_latent_loss_coef: 1.0
+  adapt_action_loss_coef: 1.0

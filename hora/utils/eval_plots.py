@@ -35,6 +35,7 @@ BOOLEAN_FIELDS = {
     "use_tactile_obs",
     "use_tactile_hist",
     "use_shape_priv_info",
+    "env_use_shape_priv_info",
     "use_extended_priv_info",
 }
 

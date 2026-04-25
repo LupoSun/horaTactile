@@ -113,13 +113,27 @@ uses the smaller Qi 2023 per-point MLP and does not need PointNet microbatching.
 ## Stage 2 Adaptation
 
 `ProprioAdaptTConv` now accepts a configurable output dimension. For shape-aware runs it
-predicts the same 40D extrinsic vector used by the oracle policy. The Stage 2 loss remains
-the L2 loss between predicted extrinsics and oracle extrinsics, but the target now includes
-shape.
+predicts the same 40D extrinsic vector used by the oracle policy.
+
+The Stage 2 training path now mirrors the RotateIt teacher/student separation more
+closely:
+
+- the student policy input contains only deployable observations: normalized `obs` and
+  normalized `proprio_hist`
+- privileged `priv_info` and `point_cloud` are kept in a separate teacher-only path
+- the teacher path computes the oracle extrinsic target `z_t`
+- the frozen Stage 1 actor is also run with `z_t` to produce the oracle action `a_t`
+- the adaptation module is optimized with both latent imitation and action imitation:
+  `adapt_latent_loss_coef * ||z_hat_t - z_t||^2 +
+  adapt_action_loss_coef * ||a_hat_t - a_t||^2`
+
+Both coefficients default to `1.0` in `configs/train/AllegroHandHora.yaml`.
 
 No depth, RGB, camera, or visual transformer input was added. The Stage 2 input remains
 proprioceptive history plus optional tactile history, matching the current tactile learning
-setup.
+setup. With `--tactile`, the control-policy observation remains the Stage 1-compatible
+96D proprio/action window, while the adaptation history is `30 x 44`: 32 proprio/action
+history channels plus 12 tactile force-history channels.
 
 For Modal, `--tactile` defaults to `task.env.hora.useTactileHist=True` and
 `task.env.hora.useTactileObs=False`. This keeps the loaded Stage 1 actor observation shape
@@ -151,14 +165,17 @@ per-object/per-seed scalar keys, because W&B would create a separate panel for e
 the sweep completes, the run gets one rotation-reward scatter/errorbar image showing every
 seed/object eval point plus the per-object mean and 95% confidence interval.
 
-Because the shape-aware policy needs PointNet inputs during eval, the Modal eval function
-checks the BTG assets for `pointcloud_100.npy` or `pointcloud_1024.npy` sidecars. If they
-are missing, it generates them inside the remote project copy from `visual.obj` before
-starting Isaac Gym evaluation.
+Stage 2 eval does not need PointNet inputs. The auto-eval manifest still reconstructs the
+shape-aware Stage 2 model with `train.ppo.use_shape_priv_info=True` so the checkpoint
+architecture matches, but it sets `task.env.hora.useShapePrivInfo=False`. This prevents
+the eval environment from loading or generating point cloud sidecars; `ProprioAdapt.test()`
+uses only `obs` and `proprio_hist`.
 
-The point-cloud preflight only checks the object entries selected by the eval manifest.
-This matters because the object catalog also carries the built-in `simple_tennis_ball`
-asset for legacy tasks; that built-in asset is not part of the BTG1-BTG13 eval.
+The point-cloud preflight remains available for eval manifests that explicitly request
+environment-side shape privileged observations. When active, it only checks the object
+entries selected by the eval manifest. This matters because the object catalog also
+carries the built-in `simple_tennis_ball` asset for legacy tasks; that built-in asset is
+not part of the BTG1-BTG13 eval.
 
 The Modal image installs `numpy`, `trimesh`, `scipy`, and `matplotlib` into both the Modal
 function Python and the Isaac Gym `/usr/bin/python3` environment. If Stage 2 has already
@@ -201,15 +218,18 @@ Completed:
 ```text
 python -m py_compile ...modified Python files...
 PYTHONPATH=. pytest -q tests/test_object_assets.py tests/test_eval_sweep.py tests/test_recording_utils.py
+PYTHONPATH=. pytest -q tests/test_eval_sweep.py tests/test_eval_plots.py
 ```
 
-The dependency-light tests passed: `17 passed`.
+The dependency-light eval tests passed: `15 passed`.
 
 A direct PyTorch smoke test also verified that:
 
 - shape-aware Stage 1 returns 40D oracle extrinsics
 - shape-aware Stage 1 backprop reaches the lightweight PointNet with both 100 and 1024 points
 - shape-aware Stage 2 returns 40D predicted extrinsics and 40D oracle targets
+- shape-aware Stage 2 backprop reaches the adaptation network through the combined
+  latent/action imitation loss
 
 ## Point Cloud Visualization
 
@@ -243,21 +263,22 @@ modal run --detach modal_train.py::main \
 --tactile \
 --pointcloud-points 100 \
 --auto-eval \
---auto-eval-num-seeds 5 \
+--auto-eval-num-seeds 2 \
 --overrides "train.ppo.max_agent_steps=1000000"
 ```
 
-Rerun only the automatic Stage 2 eval for an existing run:
+
+Main run template:
 
 ```bash
-modal run --detach modal_train.py::stage2_eval \
---run-name mixed_pointnet_tactile_04250016 \
+# main run 
+modal run --detach modal_train.py::main \
+--run-name mixed_pointnet_tactile_04251320 \
 --runtime-profile a100_compat \
+--stage both \
 --tactile \
 --pointcloud-points 100 \
---num-seeds 2
+--auto-eval \
+--auto-eval-num-seeds 3 \
+--overrides "train.ppo.max_agent_steps=300000000"
 ```
-
-## main run 
-
-## baseline run
