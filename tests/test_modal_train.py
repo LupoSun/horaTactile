@@ -6,8 +6,8 @@ import pytest
 import modal_train
 
 DEFAULT_POINTCLOUD_ARGS = (
-    "task.env.hora.nPointCloudPts=100",
-    "train.ppo.n_pointcloud_pts=100",
+    "task.env.hora.nPointCloudPts=1024",
+    "train.ppo.n_pointcloud_pts=1024",
 )
 
 
@@ -70,7 +70,7 @@ def test_with_tactile_overrides_appends_tactile_once():
     )
     assert modal_train.with_tactile_overrides(("train.ppo.max_agent_steps=1024",), tactile=True) == (
         "train.ppo.max_agent_steps=1024",
-        "task.env.hora.useTactileObs=True",
+        "task.env.hora.useTactileObs=False",
         "task.env.hora.useTactileHist=True",
     )
     assert modal_train.with_tactile_overrides(("task.env.hora.useTactileObs=False",), tactile=True) == (
@@ -80,6 +80,10 @@ def test_with_tactile_overrides_appends_tactile_once():
 
 
 def test_with_pointcloud_overrides_selects_supported_resolution():
+    assert modal_train.with_pointcloud_overrides(()) == (
+        "task.env.hora.nPointCloudPts=1024",
+        "train.ppo.n_pointcloud_pts=1024",
+    )
     assert modal_train.with_pointcloud_overrides((), pointcloud_points=100) == (
         "task.env.hora.nPointCloudPts=100",
         "train.ppo.n_pointcloud_pts=100",
@@ -230,7 +234,7 @@ def test_build_stage_commands_include_journal_defaults():
 
 def test_build_stage2_command_can_enable_tactile():
     stage2_cmd = modal_train.build_stage2_command("demo", tactile=True)
-    assert "task.env.hora.useTactileObs=True" in stage2_cmd
+    assert "task.env.hora.useTactileObs=False" in stage2_cmd
     assert "task.env.hora.useTactileHist=True" in stage2_cmd
 
 
@@ -366,7 +370,7 @@ def test_run_requested_stages_applies_tactile_to_stage2(monkeypatch):
             (
                 "train.ppo.max_agent_steps=1024",
                 *DEFAULT_POINTCLOUD_ARGS,
-                "task.env.hora.useTactileObs=True",
+                "task.env.hora.useTactileObs=False",
                 "task.env.hora.useTactileHist=True",
             ),
         ),
@@ -423,7 +427,7 @@ def test_main_parses_overrides_before_dispatch(monkeypatch):
         extra_args=(),
         runtime_profile=modal_train.DEFAULT_RUNTIME_PROFILE,
         tactile=False,
-        pointcloud_points=100,
+        pointcloud_points=1024,
     ):
         captured["run_name"] = run_name
         captured["seed"] = seed

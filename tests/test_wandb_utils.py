@@ -98,7 +98,7 @@ def make_full_config(proprio_adapt=False):
                     "use_shape_priv_info": False,
                     "shape_embed_dim": 32,
                     "pointnet_units": [32, 32, 32],
-                    "n_pointcloud_pts": 100,
+                    "n_pointcloud_pts": 1024,
                     "proprio_adapt": proprio_adapt,
                 },
             },

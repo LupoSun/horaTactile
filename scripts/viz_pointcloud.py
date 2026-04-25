@@ -3,7 +3,7 @@
 Usage:
     # Random sample from all custom assets
     python scripts/viz_pointcloud.py
-    python scripts/viz_pointcloud.py --n-points 1024
+    python scripts/viz_pointcloud.py --n-points 100
 
     # Specific objects
     python scripts/viz_pointcloud.py assets/custom/cylinder_2dcross/Stage1_2Dcross_NEW_Rescaled_1
@@ -65,7 +65,7 @@ def plot_pointclouds(npy_files: list[Path], n_points: int, max_plots: int = 16):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("paths", nargs="*", type=Path)
-    parser.add_argument("--n-points", type=int, choices=(100, 1024), default=100)
+    parser.add_argument("--n-points", type=int, choices=(100, 1024), default=1024)
     args = parser.parse_args()
     paths = args.paths or [REPO_ROOT / "assets" / "custom"]
 

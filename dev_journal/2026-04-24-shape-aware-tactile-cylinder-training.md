@@ -41,10 +41,10 @@ The new shape-aware path is opt-in through config flags:
 task.env.hora.useShapePrivInfo=True
 task.env.hora.useExtendedPrivInfo=True
 task.env.hora.privInfoDim=17
-task.env.hora.nPointCloudPts=100
+task.env.hora.nPointCloudPts=1024
 train.ppo.use_shape_priv_info=True
 train.ppo.priv_info_dim=17
-train.ppo.n_pointcloud_pts=100
+train.ppo.n_pointcloud_pts=1024
 ```
 
 The extended raw privileged vector contains:
@@ -71,12 +71,12 @@ position remains in the privileged vector.
 
 The usual primitive cylinder URDFs do not have point cloud sidecars, so
 `hora.utils.object_assets.load_object_point_cloud()` supports flat, stem-specific
-sidecars such as `assets/cylinder/default/0000_pointcloud_100.npy`. Both 100-point and
+sidecars such as `assets/cylinder/default/0000_pointcloud_1024.npy`. Both 100-point and
 1024-point sidecars exist for the default cylinder set. They can be regenerated with:
 
 ```bash
 PYTHONPATH=. python scripts/generate_cylinder_pointclouds.py
-PYTHONPATH=. python scripts/generate_cylinder_pointclouds.py --n-points 1024
+PYTHONPATH=. python scripts/generate_cylinder_pointclouds.py --n-points 100
 ```
 
 The loader intentionally does not generate missing point clouds during training. If a
@@ -90,13 +90,14 @@ sidecar is missing, it raises `FileNotFoundError` and reports the expected filen
 
 It outputs a 32D `z_shape` vector.
 
-The default point count is 100 to match the smaller paper setup and avoid the memory
-pressure of dense point clouds. Modal exposes `--pointcloud-points`, which can be set to
-`100` or `1024`. The equivalent Hydra overrides are:
+The default point count is 1024. The PointNet itself is the smaller paper setup, so dense
+point clouds are now practical without the previous heavy PointNet OOM. Modal exposes
+`--pointcloud-points`, which can be set to `1024` or `100`. The equivalent Hydra overrides
+for the smaller option are:
 
 ```text
-task.env.hora.nPointCloudPts=1024
-train.ppo.n_pointcloud_pts=1024
+task.env.hora.nPointCloudPts=100
+train.ppo.n_pointcloud_pts=100
 ```
 
 The oracle extrinsic vector is:
@@ -119,6 +120,13 @@ shape.
 No depth, RGB, camera, or visual transformer input was added. The Stage 2 input remains
 proprioceptive history plus optional tactile history, matching the current tactile learning
 setup.
+
+For Modal, `--tactile` defaults to `task.env.hora.useTactileHist=True` and
+`task.env.hora.useTactileObs=False`. This keeps the loaded Stage 1 actor observation shape
+compatible with Stage 2 while still giving the adaptation module tactile history. Enabling
+direct tactile observations in Stage 2 changes the actor input size and will not load a
+Stage 1 checkpoint unless Stage 1 was trained with the same direct tactile observation
+flag.
 
 ## Files Changed
 
@@ -166,18 +174,18 @@ A direct PyTorch smoke test also verified that:
 ## Point Cloud Visualization
 
 Use `scripts/viz_pointcloud.py` for quick visual checks of the canonical point cloud
-sidecars. It defaults to 100 points and can also display 1024-point sidecars:
+sidecars. It defaults to 1024 points and can also display 100-point sidecars:
 
 ```bash
 python scripts/viz_pointcloud.py assets/cylinder/default
 python scripts/viz_pointcloud.py assets/custom/cylinder_2dcross
 python scripts/viz_pointcloud.py assets/custom/cylinder_3dcross
 python scripts/viz_pointcloud.py assets/cylinder/default assets/custom/cylinder_2dcross assets/custom/cylinder_3dcross
-python scripts/viz_pointcloud.py --n-points 1024 assets/cylinder/default
+python scripts/viz_pointcloud.py --n-points 100 assets/cylinder/default
 ```
 
-The script discovers both custom object sidecars named like `pointcloud_100.npy` and
-primitive-cylinder sidecars named like `0000_pointcloud_100.npy`. It uses a shared
+The script discovers both custom object sidecars named like `pointcloud_1024.npy` and
+primitive-cylinder sidecars named like `0000_pointcloud_1024.npy`. It uses a shared
 x/y/z range and equal box aspect across all displayed subplots so object size and shape
 are visually comparable.
 
@@ -187,9 +195,16 @@ are visually comparable.
 conda activate hora2
 export WANDB_API_KEY=your_key_here
 
+# small test run
 modal run --detach modal_train.py::main \
---run-name mixed_pointnet_tactile_04251206 \
+--run-name mixed_pointnet_tactile_04251239 \
 --runtime-profile a100_compat \
---stage 1 \
---pointcloud-points 100
+--stage both \
+--tactile \
+--pointcloud-points 100 \
+--overrides "train.ppo.max_agent_steps=1000000"
 ```
+
+## main run 
+
+## baseline run

@@ -320,13 +320,13 @@ def with_tactile_overrides(extra_args: tuple[str, ...], tactile: bool = False) -
         return extra_args
     overrides = list(extra_args)
     if not any(arg.startswith("task.env.hora.useTactileObs=") for arg in overrides):
-        overrides.append("task.env.hora.useTactileObs=True")
+        overrides.append("task.env.hora.useTactileObs=False")
     if not any(arg.startswith("task.env.hora.useTactileHist=") for arg in overrides):
         overrides.append("task.env.hora.useTactileHist=True")
     return tuple(overrides)
 
 
-def with_pointcloud_overrides(extra_args: tuple[str, ...], pointcloud_points: int = 100) -> tuple[str, ...]:
+def with_pointcloud_overrides(extra_args: tuple[str, ...], pointcloud_points: int = 1024) -> tuple[str, ...]:
     if pointcloud_points not in POINTCLOUD_POINT_CHOICES:
         raise ValueError(f"Unsupported pointcloud point count: {pointcloud_points}")
     overrides = list(extra_args)
@@ -614,7 +614,7 @@ def run_requested_stages(
     extra_args: tuple[str, ...] = (),
     runtime_profile: str = DEFAULT_RUNTIME_PROFILE,
     tactile: bool = False,
-    pointcloud_points: int = 100,
+    pointcloud_points: int = 1024,
 ):
     if stage not in ("1", "2", "3", "both", "all"):
         raise ValueError(f"Unsupported stage selection: {stage}")
@@ -1029,7 +1029,7 @@ def main(
     overrides: str = "",
     runtime_profile: str = DEFAULT_RUNTIME_PROFILE,
     tactile: bool = False,
-    pointcloud_points: int = 100,
+    pointcloud_points: int = 1024,
 ):
     """
     Train HORA on Modal.
