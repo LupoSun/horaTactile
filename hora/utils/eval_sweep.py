@@ -90,6 +90,8 @@ def build_eval_command(
     checkpoint = model["checkpoint"]
     use_tactile_obs = bool(model.get("use_tactile_obs", False))
     use_tactile_hist = bool(model.get("use_tactile_hist", model.get("use_tactile", False)))
+    use_shape_priv_info = bool(model.get("use_shape_priv_info", False))
+    use_extended_priv_info = bool(model.get("use_extended_priv_info", False))
     priv_info = bool(model.get("priv_info", True))
     proprio_adapt = bool(model.get("proprio_adapt", algo == "ProprioAdapt"))
     python_executable = python_executable or sys.executable
@@ -106,6 +108,11 @@ def build_eval_command(
         f"train.algo={algo}",
         f"task.env.hora.useTactileObs={'True' if use_tactile_obs else 'False'}",
         f"task.env.hora.useTactileHist={'True' if use_tactile_hist else 'False'}",
+        f"task.env.hora.useShapePrivInfo={'True' if use_shape_priv_info else 'False'}",
+        f"task.env.hora.useExtendedPrivInfo={'True' if use_extended_priv_info else 'False'}",
+        f"train.ppo.use_shape_priv_info={'True' if use_shape_priv_info else 'False'}",
+        f"task.env.hora.privInfoDim={model.get('priv_info_dim', 17 if use_extended_priv_info else 9)}",
+        f"train.ppo.priv_info_dim={model.get('priv_info_dim', 17 if use_extended_priv_info else 9)}",
         f"train.ppo.priv_info={'True' if priv_info else 'False'}",
         f"train.ppo.proprio_adapt={'True' if proprio_adapt else 'False'}",
         f"train.ppo.output_name={output_name}",
@@ -148,6 +155,8 @@ def flatten_result(result: dict[str, Any]) -> dict[str, Any]:
         "algo": result["algo"],
         "use_tactile_obs": result["use_tactile_obs"],
         "use_tactile_hist": result["use_tactile_hist"],
+        "use_shape_priv_info": result["use_shape_priv_info"],
+        "use_extended_priv_info": result["use_extended_priv_info"],
         "object_name": result["object_name"],
         "object_type": result["object_type"],
         "seed": result["seed"],
@@ -270,6 +279,8 @@ def run_sweep(
                     "algo": model.get("algo", "ProprioAdapt"),
                     "use_tactile_obs": bool(model.get("use_tactile_obs", False)),
                     "use_tactile_hist": bool(model.get("use_tactile_hist", model.get("use_tactile", False))),
+                    "use_shape_priv_info": bool(model.get("use_shape_priv_info", False)),
+                    "use_extended_priv_info": bool(model.get("use_extended_priv_info", False)),
                     "object_name": obj["name"],
                     "object_type": obj["object_type"],
                     "object_metadata": {

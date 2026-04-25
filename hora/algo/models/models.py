@@ -26,7 +26,7 @@ class MLP(nn.Module):
 
 
 class ProprioAdaptTConv(nn.Module):
-    def __init__(self, hist_obs_dim=32):
+    def __init__(self, hist_obs_dim=32, output_dim=8):
         super(ProprioAdaptTConv, self).__init__()
         self.channel_transform = nn.Sequential(
             nn.Linear(hist_obs_dim, 32),
@@ -42,7 +42,7 @@ class ProprioAdaptTConv(nn.Module):
             nn.Conv1d(32, 32, (5,), stride=(1,)),
             nn.ReLU(inplace=True),
         )
-        self.low_dim_proj = nn.Linear(32 * 3, 8)
+        self.low_dim_proj = nn.Linear(32 * 3, output_dim)
 
     def forward(self, x):
         x = self.channel_transform(x)  # (N, 50, 32)
@@ -50,6 +50,78 @@ class ProprioAdaptTConv(nn.Module):
         x = self.temporal_aggregation(x)  # (N, 32, 3)
         x = self.low_dim_proj(x.flatten(1))
         return x
+
+
+class TransformNet(nn.Module):
+    def __init__(self, k):
+        super(TransformNet, self).__init__()
+        self.k = k
+        self.conv = nn.Sequential(
+            nn.Conv1d(k, 64, 1),
+            nn.BatchNorm1d(64),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(64, 128, 1),
+            nn.BatchNorm1d(128),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(128, 1024, 1),
+            nn.BatchNorm1d(1024),
+            nn.ReLU(inplace=True),
+        )
+        self.fc = nn.Sequential(
+            nn.Linear(1024, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(inplace=True),
+            nn.Linear(512, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(inplace=True),
+            nn.Linear(256, k * k),
+        )
+        nn.init.zeros_(self.fc[-1].weight)
+        nn.init.zeros_(self.fc[-1].bias)
+
+    def forward(self, x):
+        batch_size = x.shape[0]
+        x = self.conv(x).max(dim=2).values
+        transform = self.fc(x).view(batch_size, self.k, self.k)
+        identity = torch.eye(self.k, dtype=x.dtype, device=x.device).unsqueeze(0)
+        return transform + identity
+
+
+class PointNetEncoder(nn.Module):
+    def __init__(self, embed_dim=32):
+        super(PointNetEncoder, self).__init__()
+        self.input_transform = TransformNet(3)
+        self.conv1 = nn.Sequential(nn.Conv1d(3, 64, 1), nn.BatchNorm1d(64), nn.ReLU(inplace=True))
+        self.conv2 = nn.Sequential(nn.Conv1d(64, 64, 1), nn.BatchNorm1d(64), nn.ReLU(inplace=True))
+        self.feature_transform = TransformNet(64)
+        self.conv3 = nn.Sequential(nn.Conv1d(64, 64, 1), nn.BatchNorm1d(64), nn.ReLU(inplace=True))
+        self.conv4 = nn.Sequential(nn.Conv1d(64, 128, 1), nn.BatchNorm1d(128), nn.ReLU(inplace=True))
+        self.conv5 = nn.Sequential(nn.Conv1d(128, 1024, 1), nn.BatchNorm1d(1024), nn.ReLU(inplace=True))
+        self.fc = nn.Sequential(
+            nn.Linear(1024, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=0.3),
+            nn.Linear(512, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=0.3),
+            nn.Linear(256, embed_dim),
+        )
+
+    def forward(self, point_cloud):
+        x = point_cloud.transpose(1, 2)
+        input_transform = self.input_transform(x)
+        x = torch.bmm(input_transform, x)
+        x = self.conv1(x)
+        x = self.conv2(x)
+        feature_transform = self.feature_transform(x)
+        x = torch.bmm(feature_transform, x)
+        x = self.conv3(x)
+        x = self.conv4(x)
+        x = self.conv5(x)
+        x = x.max(dim=2).values
+        return self.fc(x)
 
 
 class ActorCritic(nn.Module):
@@ -64,12 +136,18 @@ class ActorCritic(nn.Module):
         out_size = self.units[-1]
         self.priv_info = kwargs['priv_info']
         self.priv_info_stage2 = kwargs['proprio_adapt']
+        self.use_shape_priv_info = kwargs.get('use_shape_priv_info', False)
+        self.shape_embed_dim = kwargs.get('shape_embed_dim', 32)
+        self.priv_embed_dim = self.priv_mlp[-1] if self.priv_info else 0
+        self.extrin_dim = self.priv_embed_dim + (self.shape_embed_dim if self.use_shape_priv_info else 0)
         if self.priv_info:
-            mlp_input_shape += self.priv_mlp[-1]
+            mlp_input_shape += self.extrin_dim
             self.env_mlp = MLP(units=self.priv_mlp, input_size=kwargs['priv_info_dim'])
+            if self.use_shape_priv_info:
+                self.pointnet = PointNetEncoder(embed_dim=self.shape_embed_dim)
 
             if self.priv_info_stage2:
-                self.adapt_tconv = ProprioAdaptTConv(kwargs.get('hist_obs_dim', 32))
+                self.adapt_tconv = ProprioAdaptTConv(kwargs.get('hist_obs_dim', 32), output_dim=self.extrin_dim)
 
         self.actor_mlp = MLP(units=self.units, input_size=mlp_input_shape)
         self.value = torch.nn.Linear(out_size, 1)
@@ -117,12 +195,12 @@ class ActorCritic(nn.Module):
             if self.priv_info_stage2:
                 extrin = self.adapt_tconv(obs_dict['proprio_hist'])
                 # during supervised training, extrin has gt label
-                extrin_gt = self.env_mlp(obs_dict['priv_info']) if 'priv_info' in obs_dict else extrin
+                extrin_gt = self._encode_privileged(obs_dict) if 'priv_info' in obs_dict else extrin
                 extrin_gt = torch.tanh(extrin_gt)
                 extrin = torch.tanh(extrin)
                 obs = torch.cat([obs, extrin], dim=-1)
             else:
-                extrin = self.env_mlp(obs_dict['priv_info'])
+                extrin = self._encode_privileged(obs_dict)
                 extrin = torch.tanh(extrin)
                 obs = torch.cat([obs, extrin], dim=-1)
 
@@ -131,6 +209,13 @@ class ActorCritic(nn.Module):
         mu = self.mu(x)
         sigma = self.sigma
         return mu, mu * 0 + sigma, value, extrin, extrin_gt
+
+    def _encode_privileged(self, obs_dict):
+        phys_embedding = self.env_mlp(obs_dict['priv_info'])
+        if not self.use_shape_priv_info:
+            return phys_embedding
+        shape_embedding = self.pointnet(obs_dict['point_cloud'])
+        return torch.cat([phys_embedding, shape_embedding], dim=-1)
 
     def forward(self, input_dict):
         prev_actions = input_dict.get('prev_actions', None)

@@ -42,4 +42,7 @@ ppo:
   priv_info: False
   priv_info_dim: 9
   priv_info_embed_dim: 8
+  use_shape_priv_info: False
+  shape_embed_dim: 32
+  n_pointcloud_pts: 1024
   proprio_adapt: False

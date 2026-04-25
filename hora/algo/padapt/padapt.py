@@ -34,6 +34,7 @@ class ProprioAdapt(object):
         self.priv_info = self.ppo_config['priv_info']
         self.priv_info_dim = self.ppo_config['priv_info_dim']
         self.proprio_adapt = self.ppo_config['proprio_adapt']
+        self.use_shape_priv_info = self.ppo_config.get('use_shape_priv_info', False)
         self.proprio_hist_dim = self.env.prop_hist_len
         self.hist_obs_dim = self.env.hist_obs_dim
         # ---- Model ----
@@ -46,6 +47,8 @@ class ProprioAdapt(object):
             'proprio_adapt': self.proprio_adapt,
             'priv_info_dim': self.priv_info_dim,
             'hist_obs_dim': self.hist_obs_dim,
+            'use_shape_priv_info': self.use_shape_priv_info,
+            'shape_embed_dim': self.ppo_config.get('shape_embed_dim', 32),
         }
         self.model = ActorCritic(net_config)
         self.model.to(self.device)
@@ -112,6 +115,8 @@ class ProprioAdapt(object):
                 'priv_info': obs_dict['priv_info'],
                 'proprio_hist': self.sa_mean_std(obs_dict['proprio_hist'].detach()),
             }
+            if self.use_shape_priv_info:
+                input_dict['point_cloud'] = obs_dict['point_cloud']
             mu, _, _, e, e_gt = self.model._actor_critic(input_dict)
             loss = ((e - e_gt.detach()) ** 2).mean()
             self.optim.zero_grad()

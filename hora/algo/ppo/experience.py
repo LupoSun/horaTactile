@@ -26,7 +26,18 @@ def transform_op(arr):
 
 
 class ExperienceBuffer(Dataset):
-    def __init__(self, num_envs, horizon_length, batch_size, minibatch_size, obs_dim, act_dim, priv_dim, device):
+    def __init__(
+        self,
+        num_envs,
+        horizon_length,
+        batch_size,
+        minibatch_size,
+        obs_dim,
+        act_dim,
+        priv_dim,
+        device,
+        point_cloud_shape=None,
+    ):
         self.device = device
         self.num_envs = num_envs
         self.transitions_per_env = horizon_length
@@ -48,6 +59,12 @@ class ExperienceBuffer(Dataset):
             'sigmas': torch.zeros((self.transitions_per_env, self.num_envs, self.act_dim), dtype=torch.float32, device=self.device),
             'returns': torch.zeros((self.transitions_per_env, self.num_envs,  1), dtype=torch.float32, device=self.device),
         }
+        if point_cloud_shape is not None:
+            self.storage_dict['point_clouds'] = torch.zeros(
+                (self.transitions_per_env, self.num_envs, *point_cloud_shape),
+                dtype=torch.float32,
+                device=self.device,
+            )
 
         self.batch_size = batch_size
         self.minibatch_size = minibatch_size
@@ -67,9 +84,14 @@ class ExperienceBuffer(Dataset):
                 input_dict[k] = v_dict
             else:
                 input_dict[k] = v[start:end]
-        return input_dict['values'], input_dict['neglogpacs'], input_dict['advantages'], input_dict['mus'], \
-            input_dict['sigmas'], input_dict['returns'], input_dict['actions'], \
-            input_dict['obses'], input_dict['priv_info']
+        result = [
+            input_dict['values'], input_dict['neglogpacs'], input_dict['advantages'], input_dict['mus'],
+            input_dict['sigmas'], input_dict['returns'], input_dict['actions'],
+            input_dict['obses'], input_dict['priv_info'],
+        ]
+        if 'point_clouds' in input_dict:
+            result.append(input_dict['point_clouds'])
+        return tuple(result)
 
     def update_mu_sigma(self, mu, sigma):
         start = self.last_range[0]

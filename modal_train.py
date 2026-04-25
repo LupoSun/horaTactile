@@ -116,6 +116,8 @@ DEFAULT_TIMEOUT_SECONDS = 60 * 60 * 24  # 24 hours
 VOLUME_COMMIT_INTERVAL_SECONDS = 300
 DEFAULT_TASK_NAME = "AllegroHandHora"
 DEFAULT_OUTPUT_PREFIX = "AllegroHandHora"
+TACTILE_CYLINDER_OBJECT_TYPE = "cylinder_default+custom_cylinder_2dcross+custom_cylinder_3dcross"
+TACTILE_CYLINDER_SAMPLE_PROB = "[0.34,0.33,0.33]"
 ISAACGYM_FILE_ID = "1StaRl_hzYFYbJegQcyT7-yjgutc6C7F9"
 GRASP_CACHE_FILE_ID = "1xqmCDCiZjl2N7ndGsS_ZvnpViU7PH7a3"
 LOCAL_REPO_ROOT = Path(__file__).resolve().parent
@@ -396,7 +398,13 @@ def build_stage1_command(run_name: str, seed: int = 0, extra_args: tuple[str, ..
         f"seed={seed}",
         "task.env.forceScale=2", "task.env.randomForceProbScalar=0.25",
         "train.algo=PPO",
-        "task.env.object.type=cylinder_default",
+        f"task.env.object.type={TACTILE_CYLINDER_OBJECT_TYPE}",
+        f"task.env.object.sampleProb={TACTILE_CYLINDER_SAMPLE_PROB}",
+        "task.env.hora.useShapePrivInfo=True",
+        "task.env.hora.useExtendedPrivInfo=True",
+        "task.env.hora.privInfoDim=17",
+        "train.ppo.use_shape_priv_info=True",
+        "train.ppo.priv_info_dim=17",
         "train.ppo.priv_info=True", "train.ppo.proprio_adapt=False",
         f"train.ppo.output_name={get_output_name(run_name)}",
         *extra_args,
@@ -416,7 +424,13 @@ def build_stage2_command(
         "task.env.numEnvs=20000",
         "task.env.forceScale=2", "task.env.randomForceProbScalar=0.25",
         "train.algo=ProprioAdapt",
-        "task.env.object.type=cylinder_default",
+        f"task.env.object.type={TACTILE_CYLINDER_OBJECT_TYPE}",
+        f"task.env.object.sampleProb={TACTILE_CYLINDER_SAMPLE_PROB}",
+        "task.env.hora.useShapePrivInfo=True",
+        "task.env.hora.useExtendedPrivInfo=True",
+        "task.env.hora.privInfoDim=17",
+        "train.ppo.use_shape_priv_info=True",
+        "train.ppo.priv_info_dim=17",
         "train.ppo.priv_info=True", "train.ppo.proprio_adapt=True",
         f"train.ppo.output_name={get_output_name(run_name)}",
         f"checkpoint={get_stage_best_checkpoint_relpath(get_output_name(run_name), 1)}",

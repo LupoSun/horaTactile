@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
 
 import numpy as np
 
@@ -42,6 +42,9 @@ def build_recording_overrides(
     use_tactile_obs: bool,
     use_tactile_hist: bool,
     num_envs: int,
+    use_shape_priv_info: bool = False,
+    use_extended_priv_info: bool = False,
+    priv_info_dim: Optional[int] = None,
     extra_overrides: Iterable[str] = (),
 ) -> list[str]:
     algo = "PPO" if stage == 1 else "ProprioAdapt"
@@ -67,6 +70,11 @@ def build_recording_overrides(
         f"train.ppo.proprio_adapt={'True' if stage == 2 else 'False'}",
         f"task.env.hora.useTactileObs={'True' if use_tactile_obs else 'False'}",
         f"task.env.hora.useTactileHist={'True' if use_tactile_hist else 'False'}",
+        f"task.env.hora.useShapePrivInfo={'True' if use_shape_priv_info else 'False'}",
+        f"task.env.hora.useExtendedPrivInfo={'True' if use_extended_priv_info else 'False'}",
+        f"train.ppo.use_shape_priv_info={'True' if use_shape_priv_info else 'False'}",
+        f"task.env.hora.privInfoDim={priv_info_dim or (17 if use_extended_priv_info else 9)}",
+        f"train.ppo.priv_info_dim={priv_info_dim or (17 if use_extended_priv_info else 9)}",
         f"train.ppo.output_name={output_name}",
         f"checkpoint={checkpoint}",
         *list(extra_overrides),

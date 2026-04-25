@@ -13,7 +13,7 @@ from isaacgym import gymapi
 from isaacgym.torch_utils import to_torch, unscale, quat_apply, tensor_clamp, torch_rand_float, quat_conjugate, quat_mul
 import torch
 from hora.utils.misc import tprint
-from hora.utils.object_assets import build_object_asset_catalog
+from hora.utils.object_assets import build_object_asset_catalog, load_object_point_cloud
 from hora.utils.tactile_utils import resolve_fingertip_body_indices
 from .base.vec_task import VecTask
 
@@ -21,6 +21,7 @@ from .base.vec_task import VecTask
 class AllegroHandHora(VecTask):
     def __init__(self, config, sim_device, graphics_device_id, headless):
         self.config = config
+        self.use_extended_priv_info = config['env']['hora'].get('useExtendedPrivInfo', False)
         # before calling init in VecTask, need to do
         # 1. setup randomization
         self._setup_domain_rand_config(config['env']['randomization'])
@@ -34,6 +35,8 @@ class AllegroHandHora(VecTask):
         self.use_tactile_hist = config['env']['hora'].get('useTactileHist', legacy_use_tactile)
         self.use_tactile_obs = config['env']['hora'].get('useTactileObs', legacy_use_tactile)
         self.use_tactile = self.use_tactile_obs or self.use_tactile_hist
+        self.use_shape_priv_info = config['env']['hora'].get('useShapePrivInfo', False)
+        self.n_pointcloud_pts = config['env']['hora'].get('nPointCloudPts', 100)
         self.proprio_obs_dim = 32
         self.tactile_dim = 12
         self.tactile_hist_dim = self.tactile_dim if self.use_tactile_hist else 0
@@ -55,6 +58,12 @@ class AllegroHandHora(VecTask):
             'obj_friction': (5, 6),
             'obj_com': (6, 9),
         }
+        if self.use_extended_priv_info:
+            self.priv_info_dict.update({
+                'obj_orientation': (9, 13),
+                'obj_angvel': (13, 16),
+                'obj_restitution': (16, 17),
+            })
 
         super().__init__(config, sim_device, graphics_device_id, headless)
 
@@ -213,6 +222,8 @@ class AllegroHandHora(VecTask):
             # add object
             object_type_id = np.random.choice(len(self.object_type_list), p=self.object_type_prob)
             object_asset = self.object_asset_list[object_type_id]
+            if self.use_shape_priv_info:
+                self.point_cloud_buf[i] = self.object_point_clouds[object_type_id]
 
             object_handle = self.gym.create_actor(env_ptr, object_asset, obj_pose, 'object', i, 0, 0)
             self.object_init_state.append([
@@ -363,6 +374,9 @@ class AllegroHandHora(VecTask):
             self.obs_buf[:] = self.obs_buf_lag_history[:, -self.obs_history_len:].reshape(self.num_envs, -1).clone()
         self.at_reset_buf[at_reset_env_ids] = 0
         self._update_priv_buf(env_id=range(self.num_envs), name='obj_position', value=self.object_pos.clone())
+        if self.use_extended_priv_info:
+            self._update_priv_buf(env_id=range(self.num_envs), name='obj_orientation', value=self.object_rot.clone())
+            self._update_priv_buf(env_id=range(self.num_envs), name='obj_angvel', value=self.object_angvel.clone())
 
     def compute_reward(self, actions):
         self.rot_axis_buf[:, -1] = -1
@@ -471,12 +485,16 @@ class AllegroHandHora(VecTask):
         super().reset()
         self.obs_dict['priv_info'] = self.priv_info_buf.to(self.rl_device)
         self.obs_dict['proprio_hist'] = self.proprio_hist_buf.to(self.rl_device)
+        if self.use_shape_priv_info:
+            self.obs_dict['point_cloud'] = self.point_cloud_buf.to(self.rl_device)
         return self.obs_dict
 
     def step(self, actions):
         super().step(actions)
         self.obs_dict['priv_info'] = self.priv_info_buf.to(self.rl_device)
         self.obs_dict['proprio_hist'] = self.proprio_hist_buf.to(self.rl_device)
+        if self.use_shape_priv_info:
+            self.obs_dict['point_cloud'] = self.point_cloud_buf.to(self.rl_device)
         return self.obs_dict, self.rew_buf, self.reset_buf, self.extras
 
     def update_low_level_control(self):
@@ -539,6 +557,9 @@ class AllegroHandHora(VecTask):
         self.enable_priv_obj_scale = p_config['enableObjScale']
         self.enable_priv_obj_com = p_config['enableObjCOM']
         self.enable_priv_obj_friction = p_config['enableObjFriction']
+        self.enable_priv_obj_orientation = p_config.get('enableObjOrientation', self.use_extended_priv_info)
+        self.enable_priv_obj_angvel = p_config.get('enableObjAngVel', self.use_extended_priv_info)
+        self.enable_priv_obj_restitution = p_config.get('enableObjRestitution', False)
 
     def _update_priv_buf(self, env_id, name, value, lower=None, upper=None):
         # normalize to -1, 1
@@ -578,6 +599,8 @@ class AllegroHandHora(VecTask):
         self.proprio_hist_buf = torch.zeros((num_envs, self.prop_hist_len, self.hist_obs_dim), device=self.device, dtype=torch.float)
         if self.use_tactile_hist or self.use_tactile_obs:
             self.tactile_hist_buf = torch.zeros((num_envs, self.prop_hist_len, self.tactile_dim), device=self.device, dtype=torch.float)
+        if self.use_shape_priv_info:
+            self.point_cloud_buf = torch.zeros((num_envs, self.n_pointcloud_pts, 3), device=self.device, dtype=torch.float)
 
     def _setup_reward_config(self, r_config):
         self.angvel_clip_min = r_config['angvelClipMin']
@@ -609,11 +632,15 @@ class AllegroHandHora(VecTask):
 
         # load object asset
         self.object_asset_list = []
+        self.object_point_clouds = []
         for object_type in self.object_type_list:
             object_asset_file = self.asset_files_dict[object_type]
             object_asset_options = gymapi.AssetOptions()
             object_asset = self.gym.load_asset(self.sim, asset_root, object_asset_file, object_asset_options)
             self.object_asset_list.append(object_asset)
+            if self.use_shape_priv_info:
+                point_cloud = load_object_point_cloud(object_asset_file, self.n_pointcloud_pts)
+                self.object_point_clouds.append(to_torch(point_cloud, dtype=torch.float, device=self.device))
 
     def _init_object_pose(self):
         allegro_hand_start_pose = gymapi.Transform()

@@ -39,6 +39,9 @@ env:
     privInfoDim: 9
     useTactileObs: False
     useTactileHist: False
+    useShapePrivInfo: False
+    useExtendedPrivInfo: False
+    nPointCloudPts: 1024
 
   reward:
     angvelClipMin: -0.5
@@ -81,6 +84,9 @@ env:
     enableObjMass: True
     enableObjCOM: True
     enableObjFriction: True
+    enableObjOrientation: True
+    enableObjAngVel: True
+    enableObjRestitution: False
 
   object:
     type: 'block' # can be block, egg or pen

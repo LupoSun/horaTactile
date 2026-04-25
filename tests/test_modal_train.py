@@ -178,12 +178,23 @@ def test_build_stage_commands_include_journal_defaults():
     assert "train.algo=PPO" in stage1_cmd
     assert "train.ppo.priv_info=True" in stage1_cmd
     assert "train.ppo.proprio_adapt=False" in stage1_cmd
-    assert "task.env.object.type=cylinder_default" in stage1_cmd
+    assert f"task.env.object.type={modal_train.TACTILE_CYLINDER_OBJECT_TYPE}" in stage1_cmd
+    assert f"task.env.object.sampleProb={modal_train.TACTILE_CYLINDER_SAMPLE_PROB}" in stage1_cmd
+    assert "task.env.hora.useShapePrivInfo=True" in stage1_cmd
+    assert "task.env.hora.useExtendedPrivInfo=True" in stage1_cmd
+    assert "task.env.hora.privInfoDim=17" in stage1_cmd
+    assert "train.ppo.use_shape_priv_info=True" in stage1_cmd
+    assert "train.ppo.priv_info_dim=17" in stage1_cmd
     assert "train.ppo.output_name=AllegroHandHora/demo" in stage1_cmd
     assert stage1_cmd[-1] == "task.env.numEnvs=64"
 
     assert "train.algo=ProprioAdapt" in stage2_cmd
     assert "task.env.numEnvs=20000" in stage2_cmd
+    assert f"task.env.object.type={modal_train.TACTILE_CYLINDER_OBJECT_TYPE}" in stage2_cmd
+    assert "task.env.hora.useShapePrivInfo=True" in stage2_cmd
+    assert "task.env.hora.useExtendedPrivInfo=True" in stage2_cmd
+    assert "train.ppo.use_shape_priv_info=True" in stage2_cmd
+    assert "train.ppo.priv_info_dim=17" in stage2_cmd
     assert "train.ppo.proprio_adapt=True" in stage2_cmd
     assert "checkpoint=outputs/AllegroHandHora/demo/stage1_nn/best.pth" in stage2_cmd
     assert stage2_cmd[-1] == "train.ppo.max_agent_steps=1024"

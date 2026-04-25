@@ -95,6 +95,9 @@ def make_full_config(proprio_adapt=False):
                     "priv_info": True,
                     "priv_info_dim": 9,
                     "priv_info_embed_dim": 8,
+                    "use_shape_priv_info": False,
+                    "shape_embed_dim": 32,
+                    "n_pointcloud_pts": 1024,
                     "proprio_adapt": proprio_adapt,
                 },
             },
@@ -235,3 +238,67 @@ def test_proprio_adapt_tconv_supports_tactile_history_width():
     assert value.shape == (2, 1)
     assert extrin.shape == (2, 8)
     assert extrin_gt.shape == (2, 8)
+
+
+def test_actor_critic_supports_shape_privileged_pointnet():
+    model = padapt_module.ActorCritic(
+        {
+            "actor_units": [8, 4],
+            "priv_mlp_units": [4, 8],
+            "actions_num": 2,
+            "input_shape": (3,),
+            "priv_info": True,
+            "proprio_adapt": False,
+            "priv_info_dim": 9,
+            "use_shape_priv_info": True,
+            "shape_embed_dim": 32,
+        }
+    )
+
+    model.train()
+    mu, logstd, value, extrin, extrin_gt = model._actor_critic(
+        {
+            "obs": torch.randn(2, 3),
+            "priv_info": torch.randn(2, 9),
+            "point_cloud": torch.randn(2, 100, 3),
+        }
+    )
+
+    assert mu.shape == (2, 2)
+    assert logstd.shape == (2, 2)
+    assert value.shape == (2, 1)
+    assert extrin.shape == (2, 40)
+    assert extrin_gt is None
+
+
+def test_proprio_adapt_predicts_shape_aware_extrinsics():
+    model = padapt_module.ActorCritic(
+        {
+            "actor_units": [8, 4],
+            "priv_mlp_units": [4, 8],
+            "actions_num": 2,
+            "input_shape": (3,),
+            "priv_info": True,
+            "proprio_adapt": True,
+            "priv_info_dim": 9,
+            "hist_obs_dim": 44,
+            "use_shape_priv_info": True,
+            "shape_embed_dim": 32,
+        }
+    )
+
+    model.train()
+    mu, logstd, value, extrin, extrin_gt = model._actor_critic(
+        {
+            "obs": torch.randn(2, 3),
+            "priv_info": torch.randn(2, 9),
+            "proprio_hist": torch.randn(2, 30, 44),
+            "point_cloud": torch.randn(2, 100, 3),
+        }
+    )
+
+    assert mu.shape == (2, 2)
+    assert logstd.shape == (2, 2)
+    assert value.shape == (2, 1)
+    assert extrin.shape == (2, 40)
+    assert extrin_gt.shape == (2, 40)
