@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import math
 import os
 from glob import glob
 from pathlib import Path
-import xml.etree.ElementTree as ET
 
 import numpy as np
 
@@ -85,68 +83,22 @@ def build_object_asset_catalog(
     return object_type_list, object_type_prob, asset_files_dict
 
 
-def _farthest_point_sample(points: np.ndarray, n: int) -> np.ndarray:
-    selected = [0]
-    distances = np.full(len(points), np.inf, dtype=np.float64)
-
-    for _ in range(n - 1):
-        last = points[selected[-1]]
-        dist_to_last = np.linalg.norm(points - last, axis=1)
-        distances = np.minimum(distances, dist_to_last)
-        selected.append(int(np.argmax(distances)))
-
-    return points[np.asarray(selected)].copy()
-
-
-def _normalise_points(points: np.ndarray) -> np.ndarray:
-    points = np.asarray(points, dtype=np.float32)
-    points = points - points.mean(axis=0, keepdims=True)
-    radius = float(np.max(np.linalg.norm(points, axis=1)))
-    if radius > 1e-10:
-        points = points / radius
-    return points.astype(np.float32)
-
-
-def _analytic_cylinder_point_cloud(asset_path: Path, n_points: int) -> np.ndarray:
-    tree = ET.parse(asset_path)
-    cylinder = tree.find(".//cylinder")
-    if cylinder is None:
-        raise FileNotFoundError(f"No point cloud sidecar and no cylinder geometry in {asset_path}")
-
-    radius = float(cylinder.attrib["radius"])
-    length = float(cylinder.attrib["length"])
-    dense_count = max(n_points * 8, 512)
-    side_count = dense_count // 2
-    cap_count = dense_count - side_count
-
-    side_points = []
-    for i in range(side_count):
-        z = -length / 2.0 + length * ((i + 0.5) / side_count)
-        theta = 2.0 * math.pi * ((i * 0.6180339887498949) % 1.0)
-        side_points.append([radius * math.cos(theta), radius * math.sin(theta), z])
-
-    cap_points = []
-    for i in range(cap_count):
-        theta = 2.0 * math.pi * ((i * 0.6180339887498949) % 1.0)
-        r = radius * math.sqrt((i + 0.5) / cap_count)
-        z = length / 2.0 if i % 2 == 0 else -length / 2.0
-        cap_points.append([r * math.cos(theta), r * math.sin(theta), z])
-
-    points = _normalise_points(np.asarray(side_points + cap_points, dtype=np.float32))
-    return _farthest_point_sample(points, n_points).astype(np.float32)
-
-
 def load_object_point_cloud(asset_file: str, n_points: int, repo_root: Path | None = None) -> np.ndarray:
     repo_root = REPO_ROOT if repo_root is None else Path(repo_root)
     asset_path = repo_root / asset_file
-    for sidecar in (
+    sidecars = (
         asset_path.parent / f"{asset_path.stem}_pointcloud_{n_points}.npy",
         asset_path.parent / f"pointcloud_{n_points}.npy",
-    ):
+    )
+    for sidecar in sidecars:
         if sidecar.is_file():
             points = np.load(sidecar).astype(np.float32)
             if points.shape != (n_points, 3):
                 raise ValueError(f"Expected {sidecar} to have shape {(n_points, 3)}, got {points.shape}")
             return points
 
-    return _analytic_cylinder_point_cloud(asset_path, n_points)
+    expected = " or ".join(str(path.relative_to(repo_root)) for path in sidecars)
+    raise FileNotFoundError(
+        f"Missing point cloud sidecar for {asset_file}. Expected {expected}. "
+        "Generate or add the sidecar before enabling shape privileged info."
+    )

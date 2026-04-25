@@ -486,7 +486,7 @@ class AllegroHandHora(VecTask):
         self.obs_dict['priv_info'] = self.priv_info_buf.to(self.rl_device)
         self.obs_dict['proprio_hist'] = self.proprio_hist_buf.to(self.rl_device)
         if self.use_shape_priv_info:
-            self.obs_dict['point_cloud'] = self.point_cloud_buf.to(self.rl_device)
+            self.obs_dict['point_cloud'] = self._rotated_point_cloud_buf().to(self.rl_device)
         return self.obs_dict
 
     def step(self, actions):
@@ -494,8 +494,14 @@ class AllegroHandHora(VecTask):
         self.obs_dict['priv_info'] = self.priv_info_buf.to(self.rl_device)
         self.obs_dict['proprio_hist'] = self.proprio_hist_buf.to(self.rl_device)
         if self.use_shape_priv_info:
-            self.obs_dict['point_cloud'] = self.point_cloud_buf.to(self.rl_device)
+            self.obs_dict['point_cloud'] = self._rotated_point_cloud_buf().to(self.rl_device)
         return self.obs_dict, self.rew_buf, self.reset_buf, self.extras
+
+    def _rotated_point_cloud_buf(self):
+        num_points = self.point_cloud_buf.shape[1]
+        point_cloud = self.point_cloud_buf.reshape(self.num_envs * num_points, 3)
+        object_rot = self.object_rot[:, None, :].expand(-1, num_points, -1).reshape(self.num_envs * num_points, 4)
+        return quat_apply(object_rot, point_cloud).reshape(self.num_envs, num_points, 3)
 
     def update_low_level_control(self):
         previous_dof_pos = self.allegro_hand_dof_pos.clone()

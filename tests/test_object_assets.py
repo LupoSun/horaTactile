@@ -78,7 +78,7 @@ def test_load_object_point_cloud_supports_stem_sidecar_for_flat_assets(tmp_path)
     assert np.array_equal(loaded, points)
 
 
-def test_load_object_point_cloud_generates_primitive_cylinder_points(tmp_path):
+def test_load_object_point_cloud_reports_missing_sidecar(tmp_path):
     repo_root = tmp_path / "repo"
     asset_dir = repo_root / "assets" / "cylinder" / "default"
     asset_dir.mkdir(parents=True)
@@ -94,7 +94,5 @@ def test_load_object_point_cloud_generates_primitive_cylinder_points(tmp_path):
         """
     )
 
-    loaded = load_object_point_cloud("assets/cylinder/default/0000.urdf", 100, repo_root=repo_root)
-
-    assert loaded.shape == (100, 3)
-    assert abs(float((loaded ** 2).sum(axis=1).max()) - 1.0) < 1e-5
+    with pytest.raises(FileNotFoundError, match="Missing point cloud sidecar"):
+        load_object_point_cloud("assets/cylinder/default/0000.urdf", 100, repo_root=repo_root)

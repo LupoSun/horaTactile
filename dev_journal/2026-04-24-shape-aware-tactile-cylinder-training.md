@@ -58,12 +58,21 @@ Custom cylinder-cross assets already include `pointcloud_1024.npy` sidecars. The
 loads the point cloud for each object asset and stores the per-environment tensor in
 `obs_dict["point_cloud"]`.
 
+During training/evaluation,. It rotates each environment's point cloud by the current object quaternion before
+placing it in `obs_dict["point_cloud"]` (see Qi 2023 fig2). Translation is intentionally not applied; object
+position remains in the privileged vector.
+
 The usual primitive cylinder URDFs do not have point cloud sidecars, so
 `hora.utils.object_assets.load_object_point_cloud()` supports flat, stem-specific
 sidecars such as `assets/cylinder/default/0000_pointcloud_1024.npy`. These were generated
-for the default cylinder set. The loader still has a deterministic analytic cylinder
-fallback for missing sidecars: it samples the cylinder side and caps, normalizes to
-unit-sphere space, and farthest-point subsamples to the requested point count.
+for the default cylinder set with:
+
+```bash
+PYTHONPATH=. python scripts/generate_cylinder_pointclouds.py
+```
+
+The loader intentionally does not generate missing point clouds during training. If a
+sidecar is missing, it raises `FileNotFoundError` and reports the expected filenames.
 
 `hora.algo.models.models.PointNetEncoder` is a PyTorch PointNet-style encoder based on
 the provided TensorFlow implementation:
@@ -131,7 +140,8 @@ A direct PyTorch smoke test also verified that:
 
 ## Point Cloud Visualization
 
-Use `scripts/viz_pointcloud.py` for quick visual checks of the 1024-point clouds:
+Use `scripts/viz_pointcloud.py` for quick visual checks of the canonical 1024-point
+cloud sidecars:
 
 ```bash
 python scripts/viz_pointcloud.py assets/cylinder/default
@@ -144,8 +154,3 @@ The script now discovers both custom object sidecars named `pointcloud_1024.npy`
 primitive-cylinder sidecars named like `0000_pointcloud_1024.npy`. It uses a shared
 x/y/z range and equal box aspect across all displayed subplots so object size and shape
 are visually comparable.
-
-Not completed locally:
-
-- Full pytest collection, because this local Python environment is missing `gym` and `modal`.
-- IsaacGym rollout/training, because that requires the configured IsaacGym training env.
