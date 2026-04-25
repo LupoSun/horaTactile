@@ -96,6 +96,87 @@ def test_with_pointcloud_overrides_selects_supported_resolution():
         modal_train.with_pointcloud_overrides((), pointcloud_points=512)
 
 
+def test_build_auto_eval_manifest_targets_btg_mean_stage2():
+    tactile_args = (
+        "task.env.hora.useTactileObs=False",
+        "task.env.hora.useTactileHist=True",
+    )
+    manifest = modal_train.build_auto_eval_manifest(
+        "demo",
+        tactile_args=tactile_args,
+        pointcloud_points=100,
+        num_seeds=3,
+    )
+
+    assert manifest["seeds"] == [0, 1, 2]
+    assert len(manifest["objects"]) == 13
+    assert manifest["objects"][0] == {
+        "name": "btg1_mean",
+        "object_type": "custom_btg1_mean",
+        "object_index": 1,
+    }
+    assert manifest["objects"][-1]["object_type"] == "custom_btg13_mean"
+    assert manifest["models"][0]["checkpoint"] == "outputs/AllegroHandHora/demo/stage2_nn/model_best.ckpt"
+    assert manifest["models"][0]["use_tactile_obs"] is False
+    assert manifest["models"][0]["use_tactile_hist"] is True
+    assert manifest["models"][0]["extra_overrides"] == [
+        "task.env.hora.nPointCloudPts=100",
+        "train.ppo.n_pointcloud_pts=100",
+    ]
+    with pytest.raises(ValueError):
+        modal_train.build_auto_eval_manifest("demo", num_seeds=0)
+
+
+def test_eval_pointcloud_preflight_ignores_builtin_ball(monkeypatch, tmp_path):
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(
+        """
+{
+  "models": [
+    {
+      "use_shape_priv_info": true,
+      "extra_overrides": ["task.env.hora.nPointCloudPts=100"]
+    }
+  ],
+  "objects": [
+    {"name": "btg1_mean", "object_type": "custom_btg1_mean"}
+  ]
+}
+"""
+    )
+    loaded_assets = []
+
+    def fake_catalog(object_type, sample_prob, repo_root):
+        assert object_type == "custom_btg1_mean"
+        return (
+            ["custom_btg1_mean_0"],
+            [1.0],
+            {
+                "simple_tennis_ball": "assets/ball.urdf",
+                "custom_btg1_mean_0": "assets/custom/btg1_mean/BTG_1/BTG_1.urdf",
+            },
+        )
+
+    def fake_load(asset_file, n_points, repo_root):
+        loaded_assets.append(asset_file)
+
+    monkeypatch.setattr(modal_train, "PROJECT_DIR", str(project_dir))
+    monkeypatch.setattr(
+        "hora.utils.object_assets.build_object_asset_catalog",
+        fake_catalog,
+    )
+    monkeypatch.setattr(
+        "hora.utils.object_assets.load_object_point_cloud",
+        fake_load,
+    )
+
+    modal_train._ensure_eval_pointcloud_sidecars(str(manifest_path))
+
+    assert loaded_assets == ["assets/custom/btg1_mean/BTG_1/BTG_1.urdf"]
+
+
 def test_expected_cache_files_match_default_config():
     assert modal_train.expected_cache_files() == (
         "internal_allegro_grasp_50k_s07.npy",
@@ -377,6 +458,82 @@ def test_run_requested_stages_applies_tactile_to_stage2(monkeypatch):
     ]
 
 
+def test_run_requested_stages_can_auto_eval_after_stage2(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        modal_train,
+        "train_stage1_a100_compat_remote",
+        SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("stage1", run_name, seed, extra_args))),
+    )
+    monkeypatch.setattr(
+        modal_train,
+        "train_stage2_a100_compat_remote",
+        SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("stage2", run_name, seed, extra_args))),
+    )
+    monkeypatch.setattr(
+        modal_train,
+        "train_stage3_a100_compat_remote",
+        SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("stage3", run_name, seed, extra_args))),
+    )
+    monkeypatch.setattr(
+        modal_train,
+        "eval_sweep_a100_compat_remote",
+        SimpleNamespace(
+            remote=lambda manifest, output_dir, dry_run, wandb_name, wandb_group, auto_run_name, tactile_args, pointcloud_points, num_seeds: calls.append(
+                ("eval", manifest, output_dir, dry_run, wandb_name, wandb_group, auto_run_name, tactile_args, pointcloud_points, num_seeds)
+            )
+        ),
+    )
+
+    modal_train.run_requested_stages(
+        "demo",
+        seed=6,
+        stage="both",
+        runtime_profile=modal_train.A100_COMPAT_PROFILE,
+        tactile=True,
+        pointcloud_points=100,
+        auto_eval=True,
+        auto_eval_num_seeds=7,
+    )
+
+    assert calls == [
+        (
+            "stage1",
+            "demo",
+            6,
+            ("task.env.hora.nPointCloudPts=100", "train.ppo.n_pointcloud_pts=100"),
+        ),
+        (
+            "stage2",
+            "demo",
+            6,
+            (
+                "task.env.hora.nPointCloudPts=100",
+                "train.ppo.n_pointcloud_pts=100",
+                "task.env.hora.useTactileObs=False",
+                "task.env.hora.useTactileHist=True",
+            ),
+        ),
+        (
+            "eval",
+            "",
+            f"{modal_train.VOLUME_PATH}/outputs/AllegroHandHora/demo/stage2_eval",
+            False,
+            "AllegroHandHora/demo_eval",
+            "eval",
+            "demo",
+            (
+                "task.env.hora.nPointCloudPts=100",
+                "train.ppo.n_pointcloud_pts=100",
+                "task.env.hora.useTactileObs=False",
+                "task.env.hora.useTactileHist=True",
+            ),
+            100,
+            7,
+        ),
+    ]
+
+
 def test_run_requested_stages_can_dispatch_stage3(monkeypatch):
     calls = []
     monkeypatch.setattr(
@@ -428,6 +585,8 @@ def test_main_parses_overrides_before_dispatch(monkeypatch):
         runtime_profile=modal_train.DEFAULT_RUNTIME_PROFILE,
         tactile=False,
         pointcloud_points=1024,
+        auto_eval=False,
+        auto_eval_num_seeds=modal_train.DEFAULT_AUTO_EVAL_NUM_SEEDS,
     ):
         captured["run_name"] = run_name
         captured["seed"] = seed
@@ -436,6 +595,8 @@ def test_main_parses_overrides_before_dispatch(monkeypatch):
         captured["runtime_profile"] = runtime_profile
         captured["tactile"] = tactile
         captured["pointcloud_points"] = pointcloud_points
+        captured["auto_eval"] = auto_eval
+        captured["auto_eval_num_seeds"] = auto_eval_num_seeds
 
     monkeypatch.setattr(modal_train, "run_requested_stages", fake_run_requested_stages)
 
@@ -447,6 +608,8 @@ def test_main_parses_overrides_before_dispatch(monkeypatch):
         runtime_profile=modal_train.A100_COMPAT_PROFILE,
         tactile=True,
         pointcloud_points=1024,
+        auto_eval=True,
+        auto_eval_num_seeds=9,
     )
 
     assert captured == {
@@ -457,4 +620,6 @@ def test_main_parses_overrides_before_dispatch(monkeypatch):
         "runtime_profile": modal_train.A100_COMPAT_PROFILE,
         "tactile": True,
         "pointcloud_points": 1024,
+        "auto_eval": True,
+        "auto_eval_num_seeds": 9,
     }

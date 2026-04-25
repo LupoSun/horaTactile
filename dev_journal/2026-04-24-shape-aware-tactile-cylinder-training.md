@@ -128,6 +128,43 @@ direct tactile observations in Stage 2 changes the actor input size and will not
 Stage 1 checkpoint unless Stage 1 was trained with the same direct tactile observation
 flag.
 
+## Automatic Stage 2 Eval
+
+Modal now supports an automatic post-Stage-2 eval sweep with `--auto-eval`. After Stage 2
+finishes, it evaluates the Stage 2 checkpoint on the mean-scaled BTG objects
+`custom_btg1_mean` through `custom_btg13_mean`. It defaults to five seeds per object
+(`0..4`), and can be changed with `--auto-eval-num-seeds`.
+
+The auto eval writes its generated manifest to the Modal volume, stores outputs under
+`/vol/outputs/AllegroHandHora/<run_name>/stage2_eval`, and logs a separate W&B run named
+`AllegroHandHora/<run_name>_eval` in group `eval`. The summary includes per-object means,
+standard deviations, and 95% confidence intervals. Plot outputs include dot charts with
+BTG object index on the x axis and confidence intervals as error bars.
+
+The individual object/seed eval cases run `train.py` with `WANDB_MODE=disabled`, so they
+do not create many duplicate Stage 2 W&B runs. Only the parent sweep process logs to W&B,
+after all cases finish and the aggregate table/plots have been written.
+
+The parent sweep opens the single eval W&B run at the start, prints the W&B URL, and logs
+only sweep progress scalars as each object/seed finishes. It intentionally does not log
+per-object/per-seed scalar keys, because W&B would create a separate panel for each. When
+the sweep completes, the run gets one rotation-reward scatter/errorbar image showing every
+seed/object eval point plus the per-object mean and 95% confidence interval.
+
+Because the shape-aware policy needs PointNet inputs during eval, the Modal eval function
+checks the BTG assets for `pointcloud_100.npy` or `pointcloud_1024.npy` sidecars. If they
+are missing, it generates them inside the remote project copy from `visual.obj` before
+starting Isaac Gym evaluation.
+
+The point-cloud preflight only checks the object entries selected by the eval manifest.
+This matters because the object catalog also carries the built-in `simple_tennis_ball`
+asset for legacy tasks; that built-in asset is not part of the BTG1-BTG13 eval.
+
+The Modal image installs `numpy`, `trimesh`, `scipy`, and `matplotlib` into both the Modal
+function Python and the Isaac Gym `/usr/bin/python3` environment. If Stage 2 has already
+finished and only the automatic eval failed, relaunch just the eval with
+`modal_train.py::stage2_eval` instead of rerunning training.
+
 ## Files Changed
 
 - `hora/tasks/allegro_hand_hora.py`
@@ -136,13 +173,16 @@ flag.
 - `hora/algo/ppo/experience.py`
 - `hora/algo/padapt/padapt.py`
 - `hora/utils/object_assets.py`
+- `hora/utils/eval_plots.py`
 - `hora/utils/eval_sweep.py`
 - `hora/utils/recording.py`
 - `configs/task/AllegroHandHora.yaml`
 - `configs/train/AllegroHandHora.yaml`
 - `.gitignore`
 - `modal_train.py`
+- `scripts/eval_object_sweep.py`
 - `scripts/generate_cylinder_pointclouds.py`
+- `scripts/plot_eval_sweep.py`
 - `scripts/train_s1.sh`
 - `scripts/train_s2.sh`
 - `scripts/eval_s1.sh`
@@ -195,14 +235,27 @@ are visually comparable.
 conda activate hora2
 export WANDB_API_KEY=your_key_here
 
-# small test run
+# small test run, stage1 + stage2 + eval
 modal run --detach modal_train.py::main \
---run-name mixed_pointnet_tactile_04251239 \
+--run-name mixed_pointnet_tactile_04250017 \
 --runtime-profile a100_compat \
 --stage both \
 --tactile \
 --pointcloud-points 100 \
+--auto-eval \
+--auto-eval-num-seeds 5 \
 --overrides "train.ppo.max_agent_steps=1000000"
+```
+
+Rerun only the automatic Stage 2 eval for an existing run:
+
+```bash
+modal run --detach modal_train.py::stage2_eval \
+--run-name mixed_pointnet_tactile_04250016 \
+--runtime-profile a100_compat \
+--tactile \
+--pointcloud-points 100 \
+--num-seeds 2
 ```
 
 ## main run 

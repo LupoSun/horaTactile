@@ -4,6 +4,7 @@ from hora.utils.eval_plots import (
     aggregate_results,
     format_summary_markdown,
     load_results_csv,
+    plot_rotate_reward_seed_scatter,
     resolve_results_csv,
     write_summary_csv,
 )
@@ -67,6 +68,7 @@ def test_aggregate_results_computes_mean_and_std():
     assert row["n_runs"] == 2
     assert row["rotate_reward_mean"] == 2.0
     assert round(row["rotate_reward_std"], 6) == round(2 ** 0.5, 6)
+    assert round(row["rotate_reward_ci95"], 6) == round(1.96, 6)
     assert row["reward_mean"] == 3.0
 
 
@@ -79,11 +81,12 @@ def test_summary_markdown_includes_metric_columns():
             "n_runs": 3,
             "rotate_reward_mean": 1.23,
             "rotate_reward_std": 0.45,
+            "rotate_reward_ci95": 0.35,
         }
     ]
     markdown = format_summary_markdown(summary_rows, metrics=["rotate_reward"])
-    assert "rotate_reward_mean±std" in markdown
-    assert "1.2300 ± 0.4500" in markdown
+    assert "rotate_reward_mean±ci95" in markdown
+    assert "1.2300 ± 0.3500" in markdown
 
 
 def test_write_summary_csv_writes_dynamic_headers(tmp_path):
@@ -101,3 +104,29 @@ def test_write_summary_csv_writes_dynamic_headers(tmp_path):
     text = path.read_text()
     assert "rotate_reward_mean" in text
     assert "baseline" in text
+
+
+def test_plot_rotate_reward_seed_scatter_writes_single_plot(tmp_path):
+    rows = [
+        {
+            "status": "ok",
+            "model_name": "stage2",
+            "object_name": "btg1_mean",
+            "object_index": 1,
+            "seed": 0,
+            "rotate_reward": 1.0,
+        },
+        {
+            "status": "ok",
+            "model_name": "stage2",
+            "object_name": "btg1_mean",
+            "object_index": 1,
+            "seed": 1,
+            "rotate_reward": 2.0,
+        },
+    ]
+    summary_rows = aggregate_results(rows, metrics=["rotate_reward"])
+    plot_paths = plot_rotate_reward_seed_scatter(rows, summary_rows, tmp_path)
+
+    assert [path.name for path in plot_paths] == ["rotate_reward_seed_scatter.png"]
+    assert plot_paths[0].is_file()
