@@ -1,8 +1,9 @@
-"""Quick visual check of 1024-point object point clouds.
+"""Quick visual check of object point clouds.
 
 Usage:
     # Random sample from all custom assets
     python scripts/viz_pointcloud.py
+    python scripts/viz_pointcloud.py --n-points 1024
 
     # Specific objects
     python scripts/viz_pointcloud.py assets/custom/cylinder_2dcross/Stage1_2Dcross_NEW_Rescaled_1
@@ -10,7 +11,7 @@ Usage:
     python scripts/viz_pointcloud.py assets/cylinder/default
 """
 
-import sys
+import argparse
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
@@ -20,18 +21,18 @@ from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
-def find_pointclouds(paths: list[Path]) -> list[Path]:
+def find_pointclouds(paths: list[Path], n_points: int) -> list[Path]:
     results = []
     for p in paths:
         if p.is_dir():
-            results.extend(sorted(p.rglob("pointcloud_1024.npy")))
-            results.extend(sorted(p.rglob("*_pointcloud_1024.npy")))
+            results.extend(sorted(p.rglob(f"pointcloud_{n_points}.npy")))
+            results.extend(sorted(p.rglob(f"*_pointcloud_{n_points}.npy")))
         elif p.suffix == ".npy":
             results.append(p)
     return sorted(set(results))
 
 
-def plot_pointclouds(npy_files: list[Path], max_plots: int = 16):
+def plot_pointclouds(npy_files: list[Path], n_points: int, max_plots: int = 16):
     n = min(len(npy_files), max_plots)
     cols = 4
     rows = (n + cols - 1) // cols
@@ -56,24 +57,24 @@ def plot_pointclouds(npy_files: list[Path], max_plots: int = 16):
         ax.yaxis.set_major_locator(MaxNLocator(3))
         ax.zaxis.set_major_locator(MaxNLocator(3))
 
-    plt.suptitle(f"{n} point clouds (pointcloud_1024.npy)", fontsize=10)
+    plt.suptitle(f"{n} point clouds ({n_points} points)", fontsize=10)
     plt.tight_layout()
     plt.show()
 
 
 def main():
-    if len(sys.argv) > 1:
-        paths = [Path(p) for p in sys.argv[1:]]
-    else:
-        paths = [REPO_ROOT / "assets" / "custom"]
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("paths", nargs="*", type=Path)
+    parser.add_argument("--n-points", type=int, choices=(100, 1024), default=100)
+    args = parser.parse_args()
+    paths = args.paths or [REPO_ROOT / "assets" / "custom"]
 
-    npy_files = find_pointclouds(paths)
+    npy_files = find_pointclouds(paths, args.n_points)
     if not npy_files:
-        print("No 1024-point cloud .npy files found.")
-        sys.exit(1)
+        parser.error(f"No {args.n_points}-point cloud .npy files found.")
 
     print(f"Found {len(npy_files)} point clouds, showing up to 16.")
-    plot_pointclouds(npy_files)
+    plot_pointclouds(npy_files, args.n_points)
 
 
 if __name__ == "__main__":

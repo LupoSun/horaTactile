@@ -118,6 +118,7 @@ DEFAULT_TASK_NAME = "AllegroHandHora"
 DEFAULT_OUTPUT_PREFIX = "AllegroHandHora"
 TACTILE_CYLINDER_OBJECT_TYPE = "cylinder_default+custom_cylinder_2dcross+custom_cylinder_3dcross"
 TACTILE_CYLINDER_SAMPLE_PROB = "[0.34,0.33,0.33]"
+POINTCLOUD_POINT_CHOICES = (100, 1024)
 ISAACGYM_FILE_ID = "1StaRl_hzYFYbJegQcyT7-yjgutc6C7F9"
 GRASP_CACHE_FILE_ID = "1xqmCDCiZjl2N7ndGsS_ZvnpViU7PH7a3"
 LOCAL_REPO_ROOT = Path(__file__).resolve().parent
@@ -322,6 +323,17 @@ def with_tactile_overrides(extra_args: tuple[str, ...], tactile: bool = False) -
         overrides.append("task.env.hora.useTactileObs=True")
     if not any(arg.startswith("task.env.hora.useTactileHist=") for arg in overrides):
         overrides.append("task.env.hora.useTactileHist=True")
+    return tuple(overrides)
+
+
+def with_pointcloud_overrides(extra_args: tuple[str, ...], pointcloud_points: int = 100) -> tuple[str, ...]:
+    if pointcloud_points not in POINTCLOUD_POINT_CHOICES:
+        raise ValueError(f"Unsupported pointcloud point count: {pointcloud_points}")
+    overrides = list(extra_args)
+    if not any(arg.startswith("task.env.hora.nPointCloudPts=") for arg in overrides):
+        overrides.append(f"task.env.hora.nPointCloudPts={pointcloud_points}")
+    if not any(arg.startswith("train.ppo.n_pointcloud_pts=") for arg in overrides):
+        overrides.append(f"train.ppo.n_pointcloud_pts={pointcloud_points}")
     return tuple(overrides)
 
 
@@ -602,23 +614,25 @@ def run_requested_stages(
     extra_args: tuple[str, ...] = (),
     runtime_profile: str = DEFAULT_RUNTIME_PROFILE,
     tactile: bool = False,
+    pointcloud_points: int = 100,
 ):
     if stage not in ("1", "2", "3", "both", "all"):
         raise ValueError(f"Unsupported stage selection: {stage}")
     profile = get_runtime_profile(runtime_profile)
     stage1_remote, stage2_remote, stage3_remote = get_stage_remote_functions(profile.name)
+    pointcloud_args = with_pointcloud_overrides(extra_args, pointcloud_points=pointcloud_points)
 
     if stage in ("1", "both", "all"):
         print(f"[hora] Starting stage 1 training: {run_name} [{profile.name}]")
-        stage1_remote.remote(run_name, seed, extra_args)
+        stage1_remote.remote(run_name, seed, pointcloud_args)
 
     if stage in ("2", "both", "all"):
         print(f"[hora] Starting stage 2 training: {run_name} [{profile.name}]")
-        stage2_remote.remote(run_name, seed, with_tactile_overrides(extra_args, tactile=tactile))
+        stage2_remote.remote(run_name, seed, with_tactile_overrides(pointcloud_args, tactile=tactile))
 
     if stage in ("3", "all"):
         print(f"[hora] Starting stage 3 BTG13 fine-tuning: {run_name} [{profile.name}]")
-        stage3_remote.remote(run_name, seed, with_tactile_overrides(extra_args, tactile=tactile))
+        stage3_remote.remote(run_name, seed, with_tactile_overrides(pointcloud_args, tactile=tactile))
 
     print(f"[hora] Done. Outputs on volume at /vol/outputs/{get_output_name(run_name)}/")
 
@@ -1015,6 +1029,7 @@ def main(
     overrides: str = "",
     runtime_profile: str = DEFAULT_RUNTIME_PROFILE,
     tactile: bool = False,
+    pointcloud_points: int = 100,
 ):
     """
     Train HORA on Modal.
@@ -1026,6 +1041,7 @@ def main(
         overrides: Extra Hydra overrides passed to train.py.
         runtime_profile: Modal runtime profile. One of t4_stable, a100_probe, a100_compat, h100_stable, h100_probe, h100_compat.
         tactile: When true, append the split tactile obs/history flags to stages 2 and 3.
+        pointcloud_points: Point cloud resolution for shape encoding. Must be 100 or 1024.
     """
     run_requested_stages(
         run_name,
@@ -1034,4 +1050,5 @@ def main(
         extra_args=parse_overrides(overrides),
         runtime_profile=runtime_profile,
         tactile=tactile,
+        pointcloud_points=pointcloud_points,
     )

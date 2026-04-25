@@ -8,16 +8,15 @@
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 class MLP(nn.Module):
-    def __init__(self, units, input_size):
+    def __init__(self, units, input_size, activation=nn.ELU):
         super(MLP, self).__init__()
         layers = []
         for output_size in units:
             layers.append(nn.Linear(input_size, output_size))
-            layers.append(nn.ELU())
+            layers.append(activation())
             input_size = output_size
         self.mlp = nn.Sequential(*layers)
 
@@ -52,76 +51,22 @@ class ProprioAdaptTConv(nn.Module):
         return x
 
 
-class TransformNet(nn.Module):
-    def __init__(self, k):
-        super(TransformNet, self).__init__()
-        self.k = k
-        self.conv = nn.Sequential(
-            nn.Conv1d(k, 64, 1),
-            nn.BatchNorm1d(64),
-            nn.ReLU(inplace=True),
-            nn.Conv1d(64, 128, 1),
-            nn.BatchNorm1d(128),
-            nn.ReLU(inplace=True),
-            nn.Conv1d(128, 1024, 1),
-            nn.BatchNorm1d(1024),
-            nn.ReLU(inplace=True),
-        )
-        self.fc = nn.Sequential(
-            nn.Linear(1024, 512),
-            nn.BatchNorm1d(512),
-            nn.ReLU(inplace=True),
-            nn.Linear(512, 256),
-            nn.BatchNorm1d(256),
-            nn.ReLU(inplace=True),
-            nn.Linear(256, k * k),
-        )
-        nn.init.zeros_(self.fc[-1].weight)
-        nn.init.zeros_(self.fc[-1].bias)
-
-    def forward(self, x):
-        batch_size = x.shape[0]
-        x = self.conv(x).max(dim=2).values
-        transform = self.fc(x).view(batch_size, self.k, self.k)
-        identity = torch.eye(self.k, dtype=x.dtype, device=x.device).unsqueeze(0)
-        return transform + identity
-
-
 class PointNetEncoder(nn.Module):
-    def __init__(self, embed_dim=32):
+    def __init__(self, units=None):
         super(PointNetEncoder, self).__init__()
-        self.input_transform = TransformNet(3)
-        self.conv1 = nn.Sequential(nn.Conv1d(3, 64, 1), nn.BatchNorm1d(64), nn.ReLU(inplace=True))
-        self.conv2 = nn.Sequential(nn.Conv1d(64, 64, 1), nn.BatchNorm1d(64), nn.ReLU(inplace=True))
-        self.feature_transform = TransformNet(64)
-        self.conv3 = nn.Sequential(nn.Conv1d(64, 64, 1), nn.BatchNorm1d(64), nn.ReLU(inplace=True))
-        self.conv4 = nn.Sequential(nn.Conv1d(64, 128, 1), nn.BatchNorm1d(128), nn.ReLU(inplace=True))
-        self.conv5 = nn.Sequential(nn.Conv1d(128, 1024, 1), nn.BatchNorm1d(1024), nn.ReLU(inplace=True))
-        self.fc = nn.Sequential(
-            nn.Linear(1024, 512),
-            nn.BatchNorm1d(512),
-            nn.ReLU(inplace=True),
-            nn.Dropout(p=0.3),
-            nn.Linear(512, 256),
-            nn.BatchNorm1d(256),
-            nn.ReLU(inplace=True),
-            nn.Dropout(p=0.3),
-            nn.Linear(256, embed_dim),
-        )
+        units = [32, 32, 32] if units is None else units
+        layers = []
+        input_size = 3
+        for output_size in units:
+            layers.append(nn.Linear(input_size, output_size))
+            layers.append(nn.ReLU(inplace=True))
+            input_size = output_size
+        self.point_mlp = nn.Sequential(*layers)
+        self.embed_dim = units[-1]
 
     def forward(self, point_cloud):
-        x = point_cloud.transpose(1, 2)
-        input_transform = self.input_transform(x)
-        x = torch.bmm(input_transform, x)
-        x = self.conv1(x)
-        x = self.conv2(x)
-        feature_transform = self.feature_transform(x)
-        x = torch.bmm(feature_transform, x)
-        x = self.conv3(x)
-        x = self.conv4(x)
-        x = self.conv5(x)
-        x = x.max(dim=2).values
-        return self.fc(x)
+        point_features = self.point_mlp(point_cloud)
+        return point_features.max(dim=1).values
 
 
 class ActorCritic(nn.Module):
@@ -138,13 +83,14 @@ class ActorCritic(nn.Module):
         self.priv_info_stage2 = kwargs['proprio_adapt']
         self.use_shape_priv_info = kwargs.get('use_shape_priv_info', False)
         self.shape_embed_dim = kwargs.get('shape_embed_dim', 32)
+        self.pointnet_units = kwargs.get('pointnet_units', [32, 32, self.shape_embed_dim])
         self.priv_embed_dim = self.priv_mlp[-1] if self.priv_info else 0
         self.extrin_dim = self.priv_embed_dim + (self.shape_embed_dim if self.use_shape_priv_info else 0)
         if self.priv_info:
             mlp_input_shape += self.extrin_dim
-            self.env_mlp = MLP(units=self.priv_mlp, input_size=kwargs['priv_info_dim'])
+            self.env_mlp = MLP(units=self.priv_mlp, input_size=kwargs['priv_info_dim'], activation=nn.ReLU)
             if self.use_shape_priv_info:
-                self.pointnet = PointNetEncoder(embed_dim=self.shape_embed_dim)
+                self.pointnet = PointNetEncoder(units=self.pointnet_units)
 
             if self.priv_info_stage2:
                 self.adapt_tconv = ProprioAdaptTConv(kwargs.get('hist_obs_dim', 32), output_dim=self.extrin_dim)

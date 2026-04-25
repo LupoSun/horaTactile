@@ -16,6 +16,7 @@ outputs/
 *.hydra*
 # generated grasp files
 *.npy
+!assets/cylinder/default/*_pointcloud_100.npy
 !assets/cylinder/default/*_pointcloud_1024.npy
 
 outputs

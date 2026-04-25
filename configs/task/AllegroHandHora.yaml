@@ -41,7 +41,7 @@ env:
     useTactileHist: False
     useShapePrivInfo: False
     useExtendedPrivInfo: False
-    nPointCloudPts: 1024
+    nPointCloudPts: 100
 
   reward:
     angvelClipMin: -0.5

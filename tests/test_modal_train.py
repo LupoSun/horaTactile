@@ -5,6 +5,11 @@ import pytest
 
 import modal_train
 
+DEFAULT_POINTCLOUD_ARGS = (
+    "task.env.hora.nPointCloudPts=100",
+    "train.ppo.n_pointcloud_pts=100",
+)
+
 
 def test_modal_train_module_exports_expected_entrypoints():
     assert modal_train.env["WANDB_DIR"] == f"{modal_train.VOLUME_PATH}/wandb"
@@ -72,6 +77,19 @@ def test_with_tactile_overrides_appends_tactile_once():
         "task.env.hora.useTactileObs=False",
         "task.env.hora.useTactileHist=True",
     )
+
+
+def test_with_pointcloud_overrides_selects_supported_resolution():
+    assert modal_train.with_pointcloud_overrides((), pointcloud_points=100) == (
+        "task.env.hora.nPointCloudPts=100",
+        "train.ppo.n_pointcloud_pts=100",
+    )
+    assert modal_train.with_pointcloud_overrides(("task.env.hora.nPointCloudPts=1024",), pointcloud_points=100) == (
+        "task.env.hora.nPointCloudPts=1024",
+        "train.ppo.n_pointcloud_pts=100",
+    )
+    with pytest.raises(ValueError):
+        modal_train.with_pointcloud_overrides((), pointcloud_points=512)
 
 
 def test_expected_cache_files_match_default_config():
@@ -243,8 +261,8 @@ def test_run_requested_stages_dispatches_requested_remote_calls(monkeypatch):
     )
 
     assert calls == [
-        ("stage1", "demo", 3, ("task.env.numEnvs=64",)),
-        ("stage2", "demo", 3, ("task.env.numEnvs=64",)),
+        ("stage1", "demo", 3, ("task.env.numEnvs=64", *DEFAULT_POINTCLOUD_ARGS)),
+        ("stage2", "demo", 3, ("task.env.numEnvs=64", *DEFAULT_POINTCLOUD_ARGS)),
     ]
 
 
@@ -275,8 +293,8 @@ def test_run_requested_stages_uses_selected_a100_profile(monkeypatch):
     )
 
     assert calls == [
-        ("probe-stage1", "demo", 9, ("train.ppo.max_agent_steps=1024",)),
-        ("probe-stage2", "demo", 9, ("train.ppo.max_agent_steps=1024",)),
+        ("probe-stage1", "demo", 9, ("train.ppo.max_agent_steps=1024", *DEFAULT_POINTCLOUD_ARGS)),
+        ("probe-stage2", "demo", 9, ("train.ppo.max_agent_steps=1024", *DEFAULT_POINTCLOUD_ARGS)),
     ]
 
 
@@ -307,8 +325,8 @@ def test_run_requested_stages_uses_selected_h100_profile(monkeypatch):
     )
 
     assert calls == [
-        ("h100-stable-stage1", "demo", 4, ("train.ppo.max_agent_steps=1024",)),
-        ("h100-stable-stage2", "demo", 4, ("train.ppo.max_agent_steps=1024",)),
+        ("h100-stable-stage1", "demo", 4, ("train.ppo.max_agent_steps=1024", *DEFAULT_POINTCLOUD_ARGS)),
+        ("h100-stable-stage2", "demo", 4, ("train.ppo.max_agent_steps=1024", *DEFAULT_POINTCLOUD_ARGS)),
     ]
 
 
@@ -340,13 +358,14 @@ def test_run_requested_stages_applies_tactile_to_stage2(monkeypatch):
     )
 
     assert calls == [
-        ("stage1", "demo", 6, ("train.ppo.max_agent_steps=1024",)),
+        ("stage1", "demo", 6, ("train.ppo.max_agent_steps=1024", *DEFAULT_POINTCLOUD_ARGS)),
         (
             "stage2",
             "demo",
             6,
             (
                 "train.ppo.max_agent_steps=1024",
+                *DEFAULT_POINTCLOUD_ARGS,
                 "task.env.hora.useTactileObs=True",
                 "task.env.hora.useTactileHist=True",
             ),
@@ -385,7 +404,11 @@ def test_run_requested_stages_can_dispatch_stage3(monkeypatch):
             "stage3",
             "demo",
             8,
-            ("task.env.hora.useTactileObs=True", "task.env.hora.useTactileHist=True"),
+            (
+                "task.env.hora.useTactileObs=True",
+                "task.env.hora.useTactileHist=True",
+                *DEFAULT_POINTCLOUD_ARGS,
+            ),
         ),
     ]
 
@@ -400,6 +423,7 @@ def test_main_parses_overrides_before_dispatch(monkeypatch):
         extra_args=(),
         runtime_profile=modal_train.DEFAULT_RUNTIME_PROFILE,
         tactile=False,
+        pointcloud_points=100,
     ):
         captured["run_name"] = run_name
         captured["seed"] = seed
@@ -407,6 +431,7 @@ def test_main_parses_overrides_before_dispatch(monkeypatch):
         captured["extra_args"] = extra_args
         captured["runtime_profile"] = runtime_profile
         captured["tactile"] = tactile
+        captured["pointcloud_points"] = pointcloud_points
 
     monkeypatch.setattr(modal_train, "run_requested_stages", fake_run_requested_stages)
 
@@ -417,6 +442,7 @@ def test_main_parses_overrides_before_dispatch(monkeypatch):
         overrides='task.env.numEnvs=64 "train.notes=hello world"',
         runtime_profile=modal_train.A100_COMPAT_PROFILE,
         tactile=True,
+        pointcloud_points=1024,
     )
 
     assert captured == {
@@ -426,4 +452,5 @@ def test_main_parses_overrides_before_dispatch(monkeypatch):
         "extra_args": ("task.env.numEnvs=64", "train.notes=hello world"),
         "runtime_profile": modal_train.A100_COMPAT_PROFILE,
         "tactile": True,
+        "pointcloud_points": 1024,
     }

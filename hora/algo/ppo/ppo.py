@@ -54,6 +54,7 @@ class PPO(object):
             'priv_info_dim': self.priv_info_dim,
             'use_shape_priv_info': self.use_shape_priv_info,
             'shape_embed_dim': self.ppo_config.get('shape_embed_dim', 32),
+            'pointnet_units': self.ppo_config.get('pointnet_units', [32, 32, 32]),
         }
         self.model = ActorCritic(net_config)
         self.model.to(self.device)

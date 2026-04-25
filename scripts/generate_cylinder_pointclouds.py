@@ -73,7 +73,7 @@ def main() -> None:
         default=REPO_ROOT / "assets" / "cylinder" / "default",
         help="Directory containing primitive cylinder URDF files.",
     )
-    parser.add_argument("--n-points", type=int, default=1024)
+    parser.add_argument("--n-points", type=int, choices=(100, 1024), default=100)
     args = parser.parse_args()
 
     asset_dir = args.asset_dir
