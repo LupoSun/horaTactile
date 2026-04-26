@@ -44,6 +44,8 @@ priv_info: 17D
 point_cloud: N x 3, default N = 1024
 ```
 
+Supported Modal point counts are currently `100`, `200`, `300`, `500`, and `1024`.
+
 The 17D `priv_info` vector is:
 
 ```text
@@ -246,13 +248,16 @@ sidecars during eval.
 # Experiments Ran
 
 ```bash
+conda activate hora2
+export WANDB_API_KEY=your_key_here
+
 modal run --detach modal_train.py::main \
---run-name mixed_pointnet_tactile2_04251816 \
+--run-name mixed_pointnet_tactile_04261103 \
 --runtime-profile a100_compat \
 --stage both \
 --tactile \
---pointcloud-points 100 \
+--pointcloud-points 200 \
 --auto-eval \
 --auto-eval-num-seeds 1 \
---overrides "train.ppo.max_agent_steps=500000000"
+--overrides "train.ppo.max_agent_steps=1500000000"
 ```

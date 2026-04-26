@@ -88,6 +88,18 @@ def test_with_pointcloud_overrides_selects_supported_resolution():
         "task.env.hora.nPointCloudPts=100",
         "train.ppo.n_pointcloud_pts=100",
     )
+    assert modal_train.with_pointcloud_overrides((), pointcloud_points=200) == (
+        "task.env.hora.nPointCloudPts=200",
+        "train.ppo.n_pointcloud_pts=200",
+    )
+    assert modal_train.with_pointcloud_overrides((), pointcloud_points=300) == (
+        "task.env.hora.nPointCloudPts=300",
+        "train.ppo.n_pointcloud_pts=300",
+    )
+    assert modal_train.with_pointcloud_overrides((), pointcloud_points=500) == (
+        "task.env.hora.nPointCloudPts=500",
+        "train.ppo.n_pointcloud_pts=500",
+    )
     assert modal_train.with_pointcloud_overrides(("task.env.hora.nPointCloudPts=1024",), pointcloud_points=100) == (
         "task.env.hora.nPointCloudPts=1024",
         "train.ppo.n_pointcloud_pts=100",

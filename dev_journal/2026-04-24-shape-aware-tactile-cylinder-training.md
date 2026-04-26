@@ -92,12 +92,29 @@ It outputs a 32D `z_shape` vector.
 
 The default point count is 1024. The PointNet itself is the smaller paper setup, so dense
 point clouds are now practical without the previous heavy PointNet OOM. Modal exposes
-`--pointcloud-points`, which can be set to `1024` or `100`. The equivalent Hydra overrides
-for the smaller option are:
+`--pointcloud-points`, which can be set to `100`, `200`, `300`, `500`, or `1024`. The
+equivalent Hydra overrides for the 500-point option are:
 
 ```text
-task.env.hora.nPointCloudPts=100
-train.ppo.n_pointcloud_pts=100
+task.env.hora.nPointCloudPts=500
+train.ppo.n_pointcloud_pts=500
+```
+
+Primitive cylinder sidecars can be generated with:
+
+```bash
+PYTHONPATH=. python scripts/generate_cylinder_pointclouds.py --n-points 200
+PYTHONPATH=. python scripts/generate_cylinder_pointclouds.py --n-points 300
+PYTHONPATH=. python scripts/generate_cylinder_pointclouds.py --n-points 500
+```
+
+Custom mesh assets that contain `visual.obj`, including the 2D/3D cylinder-cross assets,
+can generate sidecars with:
+
+```bash
+PYTHONPATH=. python scripts/generate_mesh_pointcloud_sidecars.py \
+  assets/custom/cylinder_2dcross assets/custom/cylinder_3dcross \
+  --n-points 200 300 500
 ```
 
 The oracle extrinsic vector is:
@@ -242,6 +259,7 @@ python scripts/viz_pointcloud.py assets/custom/cylinder_2dcross
 python scripts/viz_pointcloud.py assets/custom/cylinder_3dcross
 python scripts/viz_pointcloud.py assets/cylinder/default assets/custom/cylinder_2dcross assets/custom/cylinder_3dcross
 python scripts/viz_pointcloud.py --n-points 100 assets/cylinder/default
+python scripts/viz_pointcloud.py --n-points 500 assets/custom/cylinder_2dcross
 ```
 
 The script discovers both custom object sidecars named like `pointcloud_1024.npy` and

@@ -1,4 +1,4 @@
-"""Generate normalized 1024-point clouds for primitive cylinder URDF assets."""
+"""Generate normalized point clouds for primitive cylinder URDF assets."""
 
 from __future__ import annotations
 
@@ -73,7 +73,7 @@ def main() -> None:
         default=REPO_ROOT / "assets" / "cylinder" / "default",
         help="Directory containing primitive cylinder URDF files.",
     )
-    parser.add_argument("--n-points", type=int, choices=(100, 1024), default=1024)
+    parser.add_argument("--n-points", type=int, choices=(100, 200, 300, 500, 1024), default=1024)
     args = parser.parse_args()
 
     asset_dir = args.asset_dir
