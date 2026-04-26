@@ -247,7 +247,7 @@ sidecars during eval.
 
 ```bash
 modal run --detach modal_train.py::main \
---run-name mixed_pointnet_tactile2_04251625 \
+--run-name mixed_pointnet_tactile2_04251816 \
 --runtime-profile a100_compat \
 --stage both \
 --tactile \
