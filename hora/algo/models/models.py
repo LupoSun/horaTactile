@@ -8,16 +8,15 @@
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 class MLP(nn.Module):
-    def __init__(self, units, input_size):
+    def __init__(self, units, input_size, activation=nn.ELU):
         super(MLP, self).__init__()
         layers = []
         for output_size in units:
             layers.append(nn.Linear(input_size, output_size))
-            layers.append(nn.ELU())
+            layers.append(activation())
             input_size = output_size
         self.mlp = nn.Sequential(*layers)
 
@@ -26,7 +25,7 @@ class MLP(nn.Module):
 
 
 class ProprioAdaptTConv(nn.Module):
-    def __init__(self, hist_obs_dim=32):
+    def __init__(self, hist_obs_dim=32, output_dim=8):
         super(ProprioAdaptTConv, self).__init__()
         self.channel_transform = nn.Sequential(
             nn.Linear(hist_obs_dim, 32),
@@ -42,7 +41,7 @@ class ProprioAdaptTConv(nn.Module):
             nn.Conv1d(32, 32, (5,), stride=(1,)),
             nn.ReLU(inplace=True),
         )
-        self.low_dim_proj = nn.Linear(32 * 3, 8)
+        self.low_dim_proj = nn.Linear(32 * 3, output_dim)
 
     def forward(self, x):
         x = self.channel_transform(x)  # (N, 50, 32)
@@ -50,6 +49,24 @@ class ProprioAdaptTConv(nn.Module):
         x = self.temporal_aggregation(x)  # (N, 32, 3)
         x = self.low_dim_proj(x.flatten(1))
         return x
+
+
+class PointNetEncoder(nn.Module):
+    def __init__(self, units=None):
+        super(PointNetEncoder, self).__init__()
+        units = [32, 32, 32] if units is None else units
+        layers = []
+        input_size = 3
+        for output_size in units:
+            layers.append(nn.Linear(input_size, output_size))
+            layers.append(nn.ReLU(inplace=True))
+            input_size = output_size
+        self.point_mlp = nn.Sequential(*layers)
+        self.embed_dim = units[-1]
+
+    def forward(self, point_cloud):
+        point_features = self.point_mlp(point_cloud)
+        return point_features.max(dim=1).values
 
 
 class ActorCritic(nn.Module):
@@ -64,12 +81,19 @@ class ActorCritic(nn.Module):
         out_size = self.units[-1]
         self.priv_info = kwargs['priv_info']
         self.priv_info_stage2 = kwargs['proprio_adapt']
+        self.use_shape_priv_info = kwargs.get('use_shape_priv_info', False)
+        self.shape_embed_dim = kwargs.get('shape_embed_dim', 32)
+        self.pointnet_units = kwargs.get('pointnet_units', [32, 32, self.shape_embed_dim])
+        self.priv_embed_dim = self.priv_mlp[-1] if self.priv_info else 0
+        self.extrin_dim = self.priv_embed_dim + (self.shape_embed_dim if self.use_shape_priv_info else 0)
         if self.priv_info:
-            mlp_input_shape += self.priv_mlp[-1]
-            self.env_mlp = MLP(units=self.priv_mlp, input_size=kwargs['priv_info_dim'])
+            mlp_input_shape += self.extrin_dim
+            self.env_mlp = MLP(units=self.priv_mlp, input_size=kwargs['priv_info_dim'], activation=nn.ReLU)
+            if self.use_shape_priv_info:
+                self.pointnet = PointNetEncoder(units=self.pointnet_units)
 
             if self.priv_info_stage2:
-                self.adapt_tconv = ProprioAdaptTConv(kwargs.get('hist_obs_dim', 32))
+                self.adapt_tconv = ProprioAdaptTConv(kwargs.get('hist_obs_dim', 32), output_dim=self.extrin_dim)
 
         self.actor_mlp = MLP(units=self.units, input_size=mlp_input_shape)
         self.value = torch.nn.Linear(out_size, 1)
@@ -117,12 +141,12 @@ class ActorCritic(nn.Module):
             if self.priv_info_stage2:
                 extrin = self.adapt_tconv(obs_dict['proprio_hist'])
                 # during supervised training, extrin has gt label
-                extrin_gt = self.env_mlp(obs_dict['priv_info']) if 'priv_info' in obs_dict else extrin
+                extrin_gt = self._encode_privileged(obs_dict) if 'priv_info' in obs_dict else extrin
                 extrin_gt = torch.tanh(extrin_gt)
                 extrin = torch.tanh(extrin)
                 obs = torch.cat([obs, extrin], dim=-1)
             else:
-                extrin = self.env_mlp(obs_dict['priv_info'])
+                extrin = self._encode_privileged(obs_dict)
                 extrin = torch.tanh(extrin)
                 obs = torch.cat([obs, extrin], dim=-1)
 
@@ -131,6 +155,17 @@ class ActorCritic(nn.Module):
         mu = self.mu(x)
         sigma = self.sigma
         return mu, mu * 0 + sigma, value, extrin, extrin_gt
+
+    def _encode_privileged(self, obs_dict):
+        phys_embedding = self.env_mlp(obs_dict['priv_info'])
+        if not self.use_shape_priv_info:
+            return phys_embedding
+        shape_embedding = self.pointnet(obs_dict['point_cloud'])
+        return torch.cat([phys_embedding, shape_embedding], dim=-1)
+
+    def act_from_extrin(self, obs, extrin):
+        x = self.actor_mlp(torch.cat([obs, extrin], dim=-1))
+        return self.mu(x)
 
     def forward(self, input_dict):
         prev_actions = input_dict.get('prev_actions', None)

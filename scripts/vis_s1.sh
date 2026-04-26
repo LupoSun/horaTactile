@@ -2,7 +2,10 @@
 CACHE=$1
 python train.py task=AllegroHandHora headless=False pipeline=gpu \
 task.env.numEnvs=1 test=True \
-task.env.object.type=simple_tennis_ball \
+task.env.object.type=cylinder_default+custom_cylinder_2dcross+custom_cylinder_3dcross \
+'task.env.object.sampleProb=[0.34,0.33,0.33]' \
+task.env.hora.useShapePrivInfo=True task.env.hora.useExtendedPrivInfo=True \
+task.env.hora.privInfoDim=17 train.ppo.use_shape_priv_info=True train.ppo.priv_info_dim=17 \
 train.algo=PPO \
 task.env.randomization.randomizeMass=False \
 task.env.randomization.randomizeCOM=False \

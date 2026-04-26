@@ -1,0 +1,20 @@
+<robot name="object">
+  <link name="object">
+    <visual>
+      <origin xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="visual.obj" scale="1 1 1"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0"/>
+      <geometry>
+        <mesh filename="visual.obj" scale="1 1 1"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.05"/>
+      <inertia ixx="5.525919372964296e-05" iyy="3.647005918842326e-05" izz="3.6463077485884936e-05" ixy="1.681079665850235e-09" ixz="3.2204470188438124e-10" iyz="-8.973201966630753e-10"/>
+    </inertial>
+  </link>
+</robot>

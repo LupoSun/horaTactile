@@ -4,6 +4,8 @@ import os
 from glob import glob
 from pathlib import Path
 
+import numpy as np
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -79,3 +81,24 @@ def build_object_asset_catalog(
             asset_files_dict[entry_name] = asset_path.replace(os.sep, "/")
 
     return object_type_list, object_type_prob, asset_files_dict
+
+
+def load_object_point_cloud(asset_file: str, n_points: int, repo_root: Path | None = None) -> np.ndarray:
+    repo_root = REPO_ROOT if repo_root is None else Path(repo_root)
+    asset_path = repo_root / asset_file
+    sidecars = (
+        asset_path.parent / f"{asset_path.stem}_pointcloud_{n_points}.npy",
+        asset_path.parent / f"pointcloud_{n_points}.npy",
+    )
+    for sidecar in sidecars:
+        if sidecar.is_file():
+            points = np.load(sidecar).astype(np.float32)
+            if points.shape != (n_points, 3):
+                raise ValueError(f"Expected {sidecar} to have shape {(n_points, 3)}, got {points.shape}")
+            return points
+
+    expected = " or ".join(str(path.relative_to(repo_root)) for path in sidecars)
+    raise FileNotFoundError(
+        f"Missing point cloud sidecar for {asset_file}. Expected {expected}. "
+        "Generate or add the sidecar before enabling shape privileged info."
+    )

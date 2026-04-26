@@ -35,11 +35,17 @@ ppo:
   # snapshot setting
   save_best_after: 0
   save_frequency: 500
-  max_agent_steps: 1_500_000_000
+  max_agent_steps: 200_000_000
   nn_dir: stage2_nn
   wandb_group: ''
   # hora setting
   priv_info: False
   priv_info_dim: 9
   priv_info_embed_dim: 8
+  use_shape_priv_info: False
+  shape_embed_dim: 32
+  pointnet_units: [32, 32, 32]
+  n_pointcloud_pts: 1024
   proprio_adapt: False
+  adapt_latent_loss_coef: 1.0
+  adapt_action_loss_coef: 1.0

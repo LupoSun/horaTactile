@@ -4,6 +4,8 @@ from pathlib import Path
 from hora.utils.eval_sweep import (
     build_case_name,
     build_eval_command,
+    eval_case_subprocess_env,
+    log_eval_case_to_wandb,
     infer_output_name_from_checkpoint,
     load_manifest,
     parse_eval_metrics,
@@ -88,6 +90,29 @@ def test_build_eval_command_supports_tactile_observation_release_mode():
     assert "checkpoint=outputs/AllegroHandHora/double_tactile_s1_2/stage1_nn/best.pth" in command
 
 
+def test_build_eval_command_can_disable_env_shape_sidecars_for_stage2():
+    manifest = {
+        "num_envs": 512,
+        "max_evaluate_envs": 2000,
+        "base_overrides": [],
+    }
+    model = {
+        "name": "shape_stage2",
+        "checkpoint": "outputs/AllegroHandHora/demo/stage2_nn/model_best.ckpt",
+        "algo": "ProprioAdapt",
+        "use_shape_priv_info": True,
+        "env_use_shape_priv_info": False,
+        "priv_info": True,
+        "proprio_adapt": True,
+    }
+    obj = {"name": "mean", "object_type": "custom_btg13_mean"}
+
+    command = build_eval_command(manifest, model, obj, seed=11, python_executable="/venv/bin/python")
+
+    assert "task.env.hora.useShapePrivInfo=False" in command
+    assert "train.ppo.use_shape_priv_info=True" in command
+
+
 def test_build_case_name_is_stable():
     model = {"name": "baseline"}
     obj = {"name": "mean"}
@@ -109,3 +134,42 @@ progress 20000 / 20000 | reward: 2.50 | eps length: 240.0 | rotate reward: 1.50 
         "lin_vel_x100": 0.025,
         "command_torque": 0.21,
     }
+
+
+def test_eval_case_subprocess_env_disables_per_case_wandb():
+    env = eval_case_subprocess_env({"WANDB_MODE": "online", "WANDB_API_KEY": "secret"})
+    assert env["WANDB_MODE"] == "disabled"
+    assert env["WANDB_API_KEY"] == "secret"
+
+
+def test_log_eval_case_to_wandb_uses_single_active_run(monkeypatch):
+    logged = []
+
+    class FakeWandb:
+        run = object()
+
+        @staticmethod
+        def log(payload, step=None):
+            logged.append((payload, step))
+
+    monkeypatch.setitem(__import__("sys").modules, "wandb", FakeWandb)
+
+    log_eval_case_to_wandb(
+        {
+            "status": "ok",
+            "object_name": "btg1_mean",
+            "object_metadata": {"object_index": 1},
+            "seed": 3,
+            "metrics": {"reward": 0.5, "rotate_reward": 1.25},
+        },
+        completed=4,
+        total=65,
+    )
+
+    payload, step = logged[0]
+    assert step == 4
+    assert payload["eval/cases_completed"] == 4
+    assert payload["eval/cases_total"] == 65
+    assert payload["eval/cases_fraction"] == 4 / 65
+    assert "eval/case_reward" not in payload
+    assert "eval/btg1_mean/reward_seed3" not in payload

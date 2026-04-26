@@ -11,12 +11,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from hora.utils.eval_plots import (
     DEFAULT_METRICS,
-    aggregate_results,
-    load_results_csv,
-    plot_metric_curves,
     resolve_results_csv,
-    write_summary_csv,
-    write_summary_markdown,
+    write_eval_summary_outputs,
 )
 
 
@@ -45,23 +41,15 @@ def main() -> None:
     output_dir = args.output_dir or (eval_dir / "plots")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    rows = load_results_csv(results_csv)
-    summary_rows = aggregate_results(rows, metrics=args.metrics)
+    summary_rows, plot_paths = write_eval_summary_outputs(results_csv, output_dir=output_dir, metrics=args.metrics)
     if not summary_rows:
         raise SystemExit("No successful eval rows were found to summarize.")
 
     summary_csv = output_dir / "summary.csv"
     summary_md = output_dir / "summary.md"
-    write_summary_csv(summary_rows, summary_csv)
-    write_summary_markdown(summary_rows, summary_md, metrics=args.metrics)
 
     print(f"Wrote summary CSV: {summary_csv}")
     print(f"Wrote summary Markdown: {summary_md}")
-    try:
-        plot_paths = plot_metric_curves(summary_rows, output_dir, metrics=args.metrics)
-    except RuntimeError as exc:
-        print(f"Skipped PNG plots: {exc}")
-        return
     for plot_path in plot_paths:
         print(f"Wrote plot: {plot_path}")
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import re
 import subprocess
 import sys
@@ -90,6 +91,9 @@ def build_eval_command(
     checkpoint = model["checkpoint"]
     use_tactile_obs = bool(model.get("use_tactile_obs", False))
     use_tactile_hist = bool(model.get("use_tactile_hist", model.get("use_tactile", False)))
+    use_shape_priv_info = bool(model.get("use_shape_priv_info", False))
+    env_use_shape_priv_info = bool(model.get("env_use_shape_priv_info", use_shape_priv_info))
+    use_extended_priv_info = bool(model.get("use_extended_priv_info", False))
     priv_info = bool(model.get("priv_info", True))
     proprio_adapt = bool(model.get("proprio_adapt", algo == "ProprioAdapt"))
     python_executable = python_executable or sys.executable
@@ -106,6 +110,11 @@ def build_eval_command(
         f"train.algo={algo}",
         f"task.env.hora.useTactileObs={'True' if use_tactile_obs else 'False'}",
         f"task.env.hora.useTactileHist={'True' if use_tactile_hist else 'False'}",
+        f"task.env.hora.useShapePrivInfo={'True' if env_use_shape_priv_info else 'False'}",
+        f"task.env.hora.useExtendedPrivInfo={'True' if use_extended_priv_info else 'False'}",
+        f"train.ppo.use_shape_priv_info={'True' if use_shape_priv_info else 'False'}",
+        f"task.env.hora.privInfoDim={model.get('priv_info_dim', 17 if use_extended_priv_info else 9)}",
+        f"train.ppo.priv_info_dim={model.get('priv_info_dim', 17 if use_extended_priv_info else 9)}",
         f"train.ppo.priv_info={'True' if priv_info else 'False'}",
         f"train.ppo.proprio_adapt={'True' if proprio_adapt else 'False'}",
         f"train.ppo.output_name={output_name}",
@@ -148,6 +157,9 @@ def flatten_result(result: dict[str, Any]) -> dict[str, Any]:
         "algo": result["algo"],
         "use_tactile_obs": result["use_tactile_obs"],
         "use_tactile_hist": result["use_tactile_hist"],
+        "use_shape_priv_info": result["use_shape_priv_info"],
+        "env_use_shape_priv_info": result["env_use_shape_priv_info"],
+        "use_extended_priv_info": result["use_extended_priv_info"],
         "object_name": result["object_name"],
         "object_type": result["object_type"],
         "seed": result["seed"],
@@ -157,6 +169,8 @@ def flatten_result(result: dict[str, Any]) -> dict[str, Any]:
     }
     for key, value in result.get("object_metadata", {}).items():
         flat[f"object_{key}"] = value
+        if key == "object_index":
+            flat["object_index"] = value
     for key, value in (result.get("metrics") or {}).items():
         flat[key] = value
     return flat
@@ -206,6 +220,65 @@ def _last_nonempty_lines(output_text: str, limit: int = 8) -> list[str]:
     return lines[-limit:]
 
 
+def eval_case_subprocess_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
+    env = dict(os.environ if base_env is None else base_env)
+    env["WANDB_MODE"] = "disabled"
+    return env
+
+
+def init_sweep_wandb_run(
+    output_dir: Path,
+    run_name: str,
+    group: str = "eval",
+    project: str = "hora",
+):
+    if not run_name:
+        return None
+
+    try:
+        import wandb
+        from hora.utils.wandb_utils import resolve_wandb_mode
+    except ImportError as exc:
+        raise RuntimeError("wandb is required to log eval sweep results") from exc
+
+    mode = resolve_wandb_mode()
+    if mode == "disabled":
+        return None
+    if wandb.run is not None:
+        return wandb.run
+
+    run = wandb.init(
+        project=project,
+        name=run_name,
+        group=group,
+        mode=mode,
+        config={
+            "eval_output_dir": str(output_dir),
+            "status": "running",
+        },
+    )
+    if getattr(run, "url", None):
+        print(f"[hora] W&B eval run: {run.url}")
+    return run
+
+
+def log_eval_case_to_wandb(result: dict[str, Any], completed: int, total: int) -> None:
+    try:
+        import wandb
+    except ImportError:
+        return
+    if wandb.run is None:
+        return
+
+    payload: dict[str, Any] = {
+        "eval/cases_completed": completed,
+        "eval/cases_total": total,
+        "eval/cases_fraction": completed / total if total else 0.0,
+    }
+
+    wandb.log(payload, step=completed)
+
+
 def _stream_subprocess(
     command: list[str],
     log_path: Path,
@@ -220,6 +293,7 @@ def _stream_subprocess(
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
+        env=eval_case_subprocess_env(),
     )
     captured: list[str] = []
     assert process.stdout is not None
@@ -244,6 +318,8 @@ def run_sweep(
     output_dir: Path | None = None,
     python_executable: str | None = None,
     dry_run: bool = False,
+    wandb_name: str = "",
+    wandb_group: str = "eval",
 ) -> list[dict[str, Any]]:
     manifest = load_manifest(manifest_path)
     output_dir = default_output_dir(manifest_path) if output_dir is None else output_dir
@@ -252,6 +328,8 @@ def run_sweep(
     logs_dir.mkdir(exist_ok=True)
 
     (output_dir / "manifest.snapshot.json").write_text(json.dumps(manifest, indent=2))
+    if not dry_run and wandb_name:
+        init_sweep_wandb_run(output_dir, wandb_name, group=wandb_group)
 
     results: list[dict[str, Any]] = []
     total_cases = len(manifest["models"]) * len(manifest["objects"]) * len(manifest["seeds"])
@@ -270,6 +348,9 @@ def run_sweep(
                     "algo": model.get("algo", "ProprioAdapt"),
                     "use_tactile_obs": bool(model.get("use_tactile_obs", False)),
                     "use_tactile_hist": bool(model.get("use_tactile_hist", model.get("use_tactile", False))),
+                    "use_shape_priv_info": bool(model.get("use_shape_priv_info", False)),
+                    "env_use_shape_priv_info": bool(model.get("env_use_shape_priv_info", model.get("use_shape_priv_info", False))),
+                    "use_extended_priv_info": bool(model.get("use_extended_priv_info", False)),
                     "object_name": obj["name"],
                     "object_type": obj["object_type"],
                     "object_metadata": {
@@ -318,9 +399,94 @@ def run_sweep(
 
                 _write_results_json(results, output_dir / "results.json")
                 write_results_csv(results, output_dir / "results.csv")
+                log_eval_case_to_wandb(result, completed=len(results), total=total_cases)
 
     if not dry_run:
         _write_results_json(results, output_dir / "results.json")
         write_results_csv(results, output_dir / "results.csv")
 
     return results
+
+
+def log_sweep_to_wandb(
+    output_dir: Path,
+    summary_rows: list[dict[str, Any]],
+    plot_paths: list[Path],
+    run_name: str,
+    group: str = "eval",
+    project: str = "hora",
+) -> None:
+    if not summary_rows:
+        return
+
+    try:
+        import wandb
+        from hora.utils.wandb_utils import resolve_wandb_mode
+    except ImportError as exc:
+        raise RuntimeError("wandb is required to log eval sweep results") from exc
+
+    mode = resolve_wandb_mode()
+    if mode == "disabled":
+        return
+
+    run = wandb.run
+    if run is None:
+        run = wandb.init(
+            project=project,
+            name=run_name,
+            group=group,
+            mode=mode,
+            config={
+                "eval_output_dir": str(output_dir),
+                "n_summary_rows": len(summary_rows),
+                "status": "complete",
+            },
+        )
+    elif hasattr(run, "config"):
+        run.config.update({"n_summary_rows": len(summary_rows), "status": "complete"}, allow_val_change=True)
+
+    columns = sorted({key for row in summary_rows for key in row.keys()})
+    table = wandb.Table(columns=columns)
+    for row in summary_rows:
+        table.add_data(*[row.get(column) for column in columns])
+
+    log_payload: dict[str, Any] = {"eval/summary": table}
+    for plot_path in plot_paths:
+        if plot_path.is_file():
+            log_payload[f"eval/{plot_path.stem}"] = wandb.Image(str(plot_path))
+    wandb.log(log_payload)
+
+    for row in summary_rows:
+        object_index = row.get("object_index")
+        step = int(object_index) if object_index is not None else None
+        scalar_payload = {
+            f"eval/{row['object_name']}/{key}": value
+            for key, value in row.items()
+            if isinstance(value, (int, float)) and key not in {"object_index"}
+        }
+        if scalar_payload:
+            wandb.log(scalar_payload, step=step)
+
+    artifact = wandb.Artifact(f"{run_name.replace('/', '_')}_outputs", type="eval_sweep")
+    for relpath in ("results.csv", "results.json", "manifest.snapshot.json"):
+        path = output_dir / relpath
+        if path.is_file():
+            artifact.add_file(str(path), name=relpath)
+    plots_dir = output_dir / "plots"
+    if plots_dir.is_dir():
+        artifact.add_dir(str(plots_dir), name="plots")
+    run.log_artifact(artifact)
+    wandb.finish()
+
+
+def finalize_sweep_outputs(
+    output_dir: Path,
+    wandb_name: str = "",
+    wandb_group: str = "eval",
+) -> tuple[list[dict[str, Any]], list[Path]]:
+    from hora.utils.eval_plots import write_eval_summary_outputs
+
+    summary_rows, plot_paths = write_eval_summary_outputs(output_dir)
+    if wandb_name:
+        log_sweep_to_wandb(output_dir, summary_rows, plot_paths, run_name=wandb_name, group=wandb_group)
+    return summary_rows, plot_paths

@@ -16,6 +16,9 @@ Usage:
     # Train baseline stage 1 + tactile stage 2
     modal run modal_train.py::main --run-name my_exp --runtime-profile h100_stable --tactile
 
+    # Train stages 1/2, then automatically evaluate Stage 2 on BTG1-BTG13 mean objects
+    modal run --detach modal_train.py::main --run-name my_exp --runtime-profile a100_compat --stage both --tactile --auto-eval
+
     # Select an explicit runtime profile
     modal run modal_train.py::main --run-name my_exp --runtime-profile h100_stable --stage 1
     modal run modal_train.py::main --run-name my_exp --runtime-profile a100_probe --stage 1
@@ -53,6 +56,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import inspect
+import json
 import os
 import shlex
 import subprocess
@@ -116,6 +120,11 @@ DEFAULT_TIMEOUT_SECONDS = 60 * 60 * 24  # 24 hours
 VOLUME_COMMIT_INTERVAL_SECONDS = 300
 DEFAULT_TASK_NAME = "AllegroHandHora"
 DEFAULT_OUTPUT_PREFIX = "AllegroHandHora"
+TACTILE_CYLINDER_OBJECT_TYPE = "cylinder_default+custom_cylinder_2dcross+custom_cylinder_3dcross"
+TACTILE_CYLINDER_SAMPLE_PROB = "[0.34,0.33,0.33]"
+POINTCLOUD_POINT_CHOICES = (100, 200, 300, 500, 1024)
+DEFAULT_AUTO_EVAL_NUM_SEEDS = 5
+AUTO_EVAL_OBJECT_INDICES = tuple(range(1, 14))
 ISAACGYM_FILE_ID = "1StaRl_hzYFYbJegQcyT7-yjgutc6C7F9"
 GRASP_CACHE_FILE_ID = "1xqmCDCiZjl2N7ndGsS_ZvnpViU7PH7a3"
 LOCAL_REPO_ROOT = Path(__file__).resolve().parent
@@ -170,7 +179,7 @@ class RuntimeProfile:
 def _build_modal_image(base_image: str, torch_install: str):
     image_obj = (
         modal.Image.from_registry(base_image, add_python="3.11")
-        .pip_install("omegaconf")
+        .pip_install("omegaconf", "numpy", "trimesh", "scipy", "matplotlib")
         .apt_install("git", "wget", "unzip", "python3", "python3-pip", "python3-dev")
         .run_commands(
             # Isaac Gym Preview 4 requires Python 3.8, so we keep the actual
@@ -185,7 +194,7 @@ def _build_modal_image(base_image: str, torch_install: str):
             "&& sed -i 's/dtype=np.float/dtype=float/' /opt/isaacgym/python/isaacgym/torch_utils.py "
             "&& cd /opt/isaacgym/python && /usr/bin/python3 -m pip install -e . "
             "&& rm /tmp/isaac4.tar.gz",
-            "/usr/bin/python3 -m pip install hydra-core>=1.1 termcolor omegaconf gym wandb",
+            "/usr/bin/python3 -m pip install 'hydra-core>=1.1' termcolor omegaconf gym wandb numpy trimesh scipy matplotlib",
         )
     )
 
@@ -214,6 +223,7 @@ env = {
     "PYTHONPATH": PROJECT_DIR,
     "PYTHONUNBUFFERED": "1",
     "WANDB_DIR": f"{VOLUME_PATH}/wandb",
+    "MPLCONFIGDIR": "/tmp/matplotlib",
 }
 
 stable_image = _build_modal_image(DEFAULT_BASE_IMAGE, DEFAULT_TORCH_INSTALL)
@@ -317,10 +327,120 @@ def with_tactile_overrides(extra_args: tuple[str, ...], tactile: bool = False) -
         return extra_args
     overrides = list(extra_args)
     if not any(arg.startswith("task.env.hora.useTactileObs=") for arg in overrides):
-        overrides.append("task.env.hora.useTactileObs=True")
+        overrides.append("task.env.hora.useTactileObs=False")
     if not any(arg.startswith("task.env.hora.useTactileHist=") for arg in overrides):
         overrides.append("task.env.hora.useTactileHist=True")
     return tuple(overrides)
+
+
+def with_pointcloud_overrides(extra_args: tuple[str, ...], pointcloud_points: int = 1024) -> tuple[str, ...]:
+    if pointcloud_points not in POINTCLOUD_POINT_CHOICES:
+        raise ValueError(f"Unsupported pointcloud point count: {pointcloud_points}")
+    overrides = list(extra_args)
+    if not any(arg.startswith("task.env.hora.nPointCloudPts=") for arg in overrides):
+        overrides.append(f"task.env.hora.nPointCloudPts={pointcloud_points}")
+    if not any(arg.startswith("train.ppo.n_pointcloud_pts=") for arg in overrides):
+        overrides.append(f"train.ppo.n_pointcloud_pts={pointcloud_points}")
+    return tuple(overrides)
+
+
+def _override_value(extra_args: tuple[str, ...], key: str) -> str | None:
+    prefix = f"{key}="
+    for arg in reversed(extra_args):
+        if arg.startswith(prefix):
+            return arg[len(prefix):]
+    return None
+
+
+def _override_bool(extra_args: tuple[str, ...], key: str, default: bool = False) -> bool:
+    value = _override_value(extra_args, key)
+    if value is None:
+        return default
+    return value.lower() == "true"
+
+
+def _pointcloud_eval_overrides(pointcloud_points: int) -> list[str]:
+    return [
+        f"task.env.hora.nPointCloudPts={pointcloud_points}",
+        f"train.ppo.n_pointcloud_pts={pointcloud_points}",
+    ]
+
+
+def build_auto_eval_manifest(
+    run_name: str,
+    tactile_args: tuple[str, ...] = (),
+    pointcloud_points: int = 1024,
+    num_seeds: int = DEFAULT_AUTO_EVAL_NUM_SEEDS,
+) -> dict:
+    if num_seeds < 1:
+        raise ValueError(f"num_seeds must be >= 1, got {num_seeds}")
+    return {
+        "description": (
+            "Auto eval for the shape-aware tactile Stage 2 policy on the smallest "
+            f"mean-scaled BTG1-BTG13 objects, {num_seeds} seeds per object."
+        ),
+        "num_envs": 4096,
+        "max_evaluate_envs": 20000,
+        "seeds": list(range(num_seeds)),
+        "base_overrides": [
+            "task.env.baseObjScale=1.0",
+            "task.env.randomization.graspInitScale=0.8",
+            "task.env.reset_height_threshold=0.6",
+        ],
+        "models": [
+            {
+                "name": "stage2",
+                "checkpoint": get_stage_best_checkpoint_relpath(get_output_name(run_name), 2),
+                "algo": "ProprioAdapt",
+                "use_tactile_obs": _override_bool(tactile_args, "task.env.hora.useTactileObs", default=False),
+                "use_tactile_hist": _override_bool(tactile_args, "task.env.hora.useTactileHist", default=False),
+                "use_shape_priv_info": True,
+                "env_use_shape_priv_info": False,
+                "use_extended_priv_info": True,
+                "priv_info_dim": 17,
+                "priv_info": True,
+                "proprio_adapt": True,
+                "output_name": get_output_name(run_name),
+                "extra_overrides": _pointcloud_eval_overrides(pointcloud_points),
+            }
+        ],
+        "objects": [
+            {
+                "name": f"btg{index}_mean",
+                "object_type": f"custom_btg{index}_mean",
+                "object_index": index,
+            }
+            for index in AUTO_EVAL_OBJECT_INDICES
+        ],
+    }
+
+
+def write_auto_eval_manifest(
+    run_name: str,
+    tactile_args: tuple[str, ...] = (),
+    pointcloud_points: int = 1024,
+    num_seeds: int = DEFAULT_AUTO_EVAL_NUM_SEEDS,
+    volume_path: str = VOLUME_PATH,
+) -> str:
+    manifest = build_auto_eval_manifest(
+        run_name,
+        tactile_args=tactile_args,
+        pointcloud_points=pointcloud_points,
+        num_seeds=num_seeds,
+    )
+    manifest_dir = Path(volume_path) / "eval_manifests"
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = manifest_dir / f"{run_name}_stage2_btg_mean_{num_seeds}seeds.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+    return str(manifest_path)
+
+
+def get_auto_eval_output_dir(run_name: str, volume_path: str = VOLUME_PATH) -> str:
+    return str(Path(volume_path) / "outputs" / DEFAULT_OUTPUT_PREFIX / run_name / "stage2_eval")
+
+
+def get_auto_eval_wandb_name(run_name: str) -> str:
+    return f"{get_output_name(run_name)}_eval"
 
 
 def expected_cache_files(config_path: Path = TASK_CONFIG_PATH) -> tuple[str, ...]:
@@ -396,7 +516,13 @@ def build_stage1_command(run_name: str, seed: int = 0, extra_args: tuple[str, ..
         f"seed={seed}",
         "task.env.forceScale=2", "task.env.randomForceProbScalar=0.25",
         "train.algo=PPO",
-        "task.env.object.type=cylinder_default",
+        f"task.env.object.type={TACTILE_CYLINDER_OBJECT_TYPE}",
+        f"task.env.object.sampleProb={TACTILE_CYLINDER_SAMPLE_PROB}",
+        "task.env.hora.useShapePrivInfo=True",
+        "task.env.hora.useExtendedPrivInfo=True",
+        "task.env.hora.privInfoDim=17",
+        "train.ppo.use_shape_priv_info=True",
+        "train.ppo.priv_info_dim=17",
         "train.ppo.priv_info=True", "train.ppo.proprio_adapt=False",
         f"train.ppo.output_name={get_output_name(run_name)}",
         *extra_args,
@@ -416,7 +542,13 @@ def build_stage2_command(
         "task.env.numEnvs=20000",
         "task.env.forceScale=2", "task.env.randomForceProbScalar=0.25",
         "train.algo=ProprioAdapt",
-        "task.env.object.type=cylinder_default",
+        f"task.env.object.type={TACTILE_CYLINDER_OBJECT_TYPE}",
+        f"task.env.object.sampleProb={TACTILE_CYLINDER_SAMPLE_PROB}",
+        "task.env.hora.useShapePrivInfo=True",
+        "task.env.hora.useExtendedPrivInfo=True",
+        "task.env.hora.privInfoDim=17",
+        "train.ppo.use_shape_priv_info=True",
+        "train.ppo.priv_info_dim=17",
         "train.ppo.priv_info=True", "train.ppo.proprio_adapt=True",
         f"train.ppo.output_name={get_output_name(run_name)}",
         f"checkpoint={get_stage_best_checkpoint_relpath(get_output_name(run_name), 1)}",
@@ -512,6 +644,8 @@ def build_eval_sweep_command(
     manifest: str,
     output_dir: str = "",
     dry_run: bool = False,
+    wandb_name: str = "",
+    wandb_group: str = "eval",
 ) -> list[str]:
     cmd = [
         CONDA_PYTHON,
@@ -524,12 +658,123 @@ def build_eval_sweep_command(
         cmd.extend(["--output-dir", output_dir])
     if dry_run:
         cmd.append("--dry-run")
+    if wandb_name:
+        cmd.extend(["--wandb-name", wandb_name])
+        cmd.extend(["--wandb-group", wandb_group])
     return cmd
 
 
-def _run_eval_sweep(manifest: str, output_dir: str = "", dry_run: bool = False):
+def _load_mesh_as_trimesh(mesh_path: Path):
+    import trimesh
+
+    mesh = trimesh.load(mesh_path, force="mesh")
+    if isinstance(mesh, trimesh.Trimesh):
+        return mesh
+    if isinstance(mesh, trimesh.Scene):
+        meshes = [geom for geom in mesh.geometry.values() if isinstance(geom, trimesh.Trimesh)]
+        if meshes:
+            return trimesh.util.concatenate(meshes)
+    raise TypeError(f"Unexpected mesh type from {mesh_path}: {type(mesh)}")
+
+
+def _farthest_point_sample(points, n_points: int):
+    import numpy as np
+
+    selected = [0]
+    distances = np.full(len(points), np.inf, dtype=np.float64)
+    for _ in range(n_points - 1):
+        last = points[selected[-1]]
+        dist_to_last = np.linalg.norm(points - last, axis=1)
+        distances = np.minimum(distances, dist_to_last)
+        selected.append(int(np.argmax(distances)))
+    return points[np.asarray(selected)].copy()
+
+
+def _generate_mesh_pointcloud_sidecar(asset_file: str, n_points: int):
+    import numpy as np
+    import trimesh
+
+    asset_path = Path(PROJECT_DIR) / asset_file
+    visual_path = asset_path.parent / "visual.obj"
+    if not visual_path.is_file():
+        raise FileNotFoundError(f"Cannot generate point cloud for {asset_file}; missing {visual_path}")
+
+    mesh = _load_mesh_as_trimesh(visual_path)
+    mesh.vertices -= mesh.vertices.mean(axis=0, keepdims=True)
+    radius = float(np.max(np.linalg.norm(mesh.vertices, axis=1)))
+    if radius <= 1e-10:
+        raise ValueError(f"Cannot generate point cloud for degenerate mesh {visual_path}")
+    mesh.vertices /= radius
+
+    dense_count = max(n_points * 4, n_points)
+    sampled, _ = trimesh.sample.sample_surface(mesh, dense_count)
+    sampled = np.asarray(sampled, dtype=np.float32)
+    points = _farthest_point_sample(sampled, n_points).astype(np.float32)
+    output_path = asset_path.parent / f"pointcloud_{n_points}.npy"
+    np.save(output_path, points)
+    print(f"[hora] Generated missing point cloud sidecar: {output_path.relative_to(Path(PROJECT_DIR))}")
+
+
+def _ensure_eval_pointcloud_sidecars(manifest: str):
+    from hora.utils.object_assets import build_object_asset_catalog, load_object_point_cloud
+
+    manifest_path = Path(manifest)
+    if not manifest_path.is_absolute():
+        manifest_path = Path(PROJECT_DIR) / manifest_path
+    data = json.loads(manifest_path.read_text())
+    if not any(model.get("env_use_shape_priv_info", model.get("use_shape_priv_info", False)) for model in data.get("models", [])):
+        return
+
+    n_points = 1024
+    for model in data.get("models", []):
+        for override in model.get("extra_overrides", []):
+            if override.startswith("task.env.hora.nPointCloudPts="):
+                n_points = int(override.split("=", 1)[1])
+
+    asset_files: set[str] = set()
+    for obj in data.get("objects", []):
+        object_type_list, _, asset_files_dict = build_object_asset_catalog(
+            obj["object_type"],
+            [1.0],
+            repo_root=Path(PROJECT_DIR),
+        )
+        asset_files.update(asset_files_dict[object_type] for object_type in object_type_list)
+
+    for asset_file in sorted(asset_files):
+        try:
+            load_object_point_cloud(asset_file, n_points, repo_root=Path(PROJECT_DIR))
+        except FileNotFoundError:
+            _generate_mesh_pointcloud_sidecar(asset_file, n_points)
+
+
+def _run_eval_sweep(
+    manifest: str,
+    output_dir: str = "",
+    dry_run: bool = False,
+    wandb_name: str = "",
+    wandb_group: str = "eval",
+    auto_run_name: str = "",
+    tactile_args: tuple[str, ...] = (),
+    pointcloud_points: int = 1024,
+    num_seeds: int = DEFAULT_AUTO_EVAL_NUM_SEEDS,
+):
     setup_project_symlinks()
-    cmd = build_eval_sweep_command(manifest, output_dir=output_dir, dry_run=dry_run)
+    if auto_run_name:
+        manifest = write_auto_eval_manifest(
+            auto_run_name,
+            tactile_args=tactile_args,
+            pointcloud_points=pointcloud_points,
+            num_seeds=num_seeds,
+        )
+    if not dry_run:
+        _ensure_eval_pointcloud_sidecars(manifest)
+    cmd = build_eval_sweep_command(
+        manifest,
+        output_dir=output_dir,
+        dry_run=dry_run,
+        wandb_name=wandb_name,
+        wandb_group=wandb_group,
+    )
     _run_with_periodic_commits(cmd)
 
 
@@ -588,23 +833,45 @@ def run_requested_stages(
     extra_args: tuple[str, ...] = (),
     runtime_profile: str = DEFAULT_RUNTIME_PROFILE,
     tactile: bool = False,
+    pointcloud_points: int = 1024,
+    auto_eval: bool = False,
+    auto_eval_num_seeds: int = DEFAULT_AUTO_EVAL_NUM_SEEDS,
 ):
     if stage not in ("1", "2", "3", "both", "all"):
         raise ValueError(f"Unsupported stage selection: {stage}")
     profile = get_runtime_profile(runtime_profile)
     stage1_remote, stage2_remote, stage3_remote = get_stage_remote_functions(profile.name)
+    pointcloud_args = with_pointcloud_overrides(extra_args, pointcloud_points=pointcloud_points)
+    eval_pointcloud_points = int(_override_value(pointcloud_args, "task.env.hora.nPointCloudPts") or pointcloud_points)
 
     if stage in ("1", "both", "all"):
         print(f"[hora] Starting stage 1 training: {run_name} [{profile.name}]")
-        stage1_remote.remote(run_name, seed, extra_args)
+        stage1_remote.remote(run_name, seed, pointcloud_args)
 
     if stage in ("2", "both", "all"):
         print(f"[hora] Starting stage 2 training: {run_name} [{profile.name}]")
-        stage2_remote.remote(run_name, seed, with_tactile_overrides(extra_args, tactile=tactile))
+        tactile_args = with_tactile_overrides(pointcloud_args, tactile=tactile)
+        stage2_remote.remote(run_name, seed, tactile_args)
+
+        if auto_eval:
+            output_dir = get_auto_eval_output_dir(run_name)
+            eval_remote = get_eval_sweep_remote_function(profile.name)
+            print(f"[hora] Starting stage 2 BTG mean eval sweep: {run_name} [{profile.name}]")
+            eval_remote.remote(
+                "",
+                output_dir,
+                False,
+                get_auto_eval_wandb_name(run_name),
+                "eval",
+                run_name,
+                tactile_args,
+                eval_pointcloud_points,
+                auto_eval_num_seeds,
+            )
 
     if stage in ("3", "all"):
         print(f"[hora] Starting stage 3 BTG13 fine-tuning: {run_name} [{profile.name}]")
-        stage3_remote.remote(run_name, seed, with_tactile_overrides(extra_args, tactile=tactile))
+        stage3_remote.remote(run_name, seed, with_tactile_overrides(pointcloud_args, tactile=tactile))
 
     print(f"[hora] Done. Outputs on volume at /vol/outputs/{get_output_name(run_name)}/")
 
@@ -897,10 +1164,30 @@ def train_stage3_h100_compat_remote(run_name: str, seed: int = 0, extra_args: tu
     gpu=RUNTIME_PROFILES[T4_STABLE_PROFILE].gpu,
     function_env=RUNTIME_PROFILES[T4_STABLE_PROFILE].function_env,
 ))
-def eval_sweep_t4_stable_remote(manifest: str, output_dir: str = "", dry_run: bool = False):
+def eval_sweep_t4_stable_remote(
+    manifest: str,
+    output_dir: str = "",
+    dry_run: bool = False,
+    wandb_name: str = "",
+    wandb_group: str = "eval",
+    auto_run_name: str = "",
+    tactile_args: tuple[str, ...] = (),
+    pointcloud_points: int = 1024,
+    num_seeds: int = DEFAULT_AUTO_EVAL_NUM_SEEDS,
+):
     """Run a manifest-driven evaluation sweep on T4."""
     emit_runtime_diagnostics(T4_STABLE_PROFILE)
-    _run_eval_sweep(manifest, output_dir=output_dir, dry_run=dry_run)
+    _run_eval_sweep(
+        manifest,
+        output_dir=output_dir,
+        dry_run=dry_run,
+        wandb_name=wandb_name,
+        wandb_group=wandb_group,
+        auto_run_name=auto_run_name,
+        tactile_args=tactile_args,
+        pointcloud_points=pointcloud_points,
+        num_seeds=num_seeds,
+    )
 
 
 @app.function(**_modal_function_kwargs(
@@ -911,10 +1198,30 @@ def eval_sweep_t4_stable_remote(manifest: str, output_dir: str = "", dry_run: bo
     gpu=RUNTIME_PROFILES[A100_PROBE_PROFILE].gpu,
     function_env=RUNTIME_PROFILES[A100_PROBE_PROFILE].function_env,
 ))
-def eval_sweep_a100_probe_remote(manifest: str, output_dir: str = "", dry_run: bool = False):
+def eval_sweep_a100_probe_remote(
+    manifest: str,
+    output_dir: str = "",
+    dry_run: bool = False,
+    wandb_name: str = "",
+    wandb_group: str = "eval",
+    auto_run_name: str = "",
+    tactile_args: tuple[str, ...] = (),
+    pointcloud_points: int = 1024,
+    num_seeds: int = DEFAULT_AUTO_EVAL_NUM_SEEDS,
+):
     """Run a manifest-driven evaluation sweep on the current A100 image."""
     emit_runtime_diagnostics(A100_PROBE_PROFILE)
-    _run_eval_sweep(manifest, output_dir=output_dir, dry_run=dry_run)
+    _run_eval_sweep(
+        manifest,
+        output_dir=output_dir,
+        dry_run=dry_run,
+        wandb_name=wandb_name,
+        wandb_group=wandb_group,
+        auto_run_name=auto_run_name,
+        tactile_args=tactile_args,
+        pointcloud_points=pointcloud_points,
+        num_seeds=num_seeds,
+    )
 
 
 @app.function(**_modal_function_kwargs(
@@ -925,10 +1232,30 @@ def eval_sweep_a100_probe_remote(manifest: str, output_dir: str = "", dry_run: b
     gpu=RUNTIME_PROFILES[A100_COMPAT_PROFILE].gpu,
     function_env=RUNTIME_PROFILES[A100_COMPAT_PROFILE].function_env,
 ))
-def eval_sweep_a100_compat_remote(manifest: str, output_dir: str = "", dry_run: bool = False):
+def eval_sweep_a100_compat_remote(
+    manifest: str,
+    output_dir: str = "",
+    dry_run: bool = False,
+    wandb_name: str = "",
+    wandb_group: str = "eval",
+    auto_run_name: str = "",
+    tactile_args: tuple[str, ...] = (),
+    pointcloud_points: int = 1024,
+    num_seeds: int = DEFAULT_AUTO_EVAL_NUM_SEEDS,
+):
     """Run a manifest-driven evaluation sweep on the alternate A100 compatibility image."""
     emit_runtime_diagnostics(A100_COMPAT_PROFILE)
-    _run_eval_sweep(manifest, output_dir=output_dir, dry_run=dry_run)
+    _run_eval_sweep(
+        manifest,
+        output_dir=output_dir,
+        dry_run=dry_run,
+        wandb_name=wandb_name,
+        wandb_group=wandb_group,
+        auto_run_name=auto_run_name,
+        tactile_args=tactile_args,
+        pointcloud_points=pointcloud_points,
+        num_seeds=num_seeds,
+    )
 
 
 @app.function(**_modal_function_kwargs(
@@ -939,10 +1266,30 @@ def eval_sweep_a100_compat_remote(manifest: str, output_dir: str = "", dry_run: 
     gpu=RUNTIME_PROFILES[H100_STABLE_PROFILE].gpu,
     function_env=RUNTIME_PROFILES[H100_STABLE_PROFILE].function_env,
 ))
-def eval_sweep_h100_stable_remote(manifest: str, output_dir: str = "", dry_run: bool = False):
+def eval_sweep_h100_stable_remote(
+    manifest: str,
+    output_dir: str = "",
+    dry_run: bool = False,
+    wandb_name: str = "",
+    wandb_group: str = "eval",
+    auto_run_name: str = "",
+    tactile_args: tuple[str, ...] = (),
+    pointcloud_points: int = 1024,
+    num_seeds: int = DEFAULT_AUTO_EVAL_NUM_SEEDS,
+):
     """Run a manifest-driven evaluation sweep on the validated H100 image."""
     emit_runtime_diagnostics(H100_STABLE_PROFILE)
-    _run_eval_sweep(manifest, output_dir=output_dir, dry_run=dry_run)
+    _run_eval_sweep(
+        manifest,
+        output_dir=output_dir,
+        dry_run=dry_run,
+        wandb_name=wandb_name,
+        wandb_group=wandb_group,
+        auto_run_name=auto_run_name,
+        tactile_args=tactile_args,
+        pointcloud_points=pointcloud_points,
+        num_seeds=num_seeds,
+    )
 
 
 @app.function(**_modal_function_kwargs(
@@ -953,10 +1300,30 @@ def eval_sweep_h100_stable_remote(manifest: str, output_dir: str = "", dry_run: 
     gpu=RUNTIME_PROFILES[H100_PROBE_PROFILE].gpu,
     function_env=RUNTIME_PROFILES[H100_PROBE_PROFILE].function_env,
 ))
-def eval_sweep_h100_probe_remote(manifest: str, output_dir: str = "", dry_run: bool = False):
+def eval_sweep_h100_probe_remote(
+    manifest: str,
+    output_dir: str = "",
+    dry_run: bool = False,
+    wandb_name: str = "",
+    wandb_group: str = "eval",
+    auto_run_name: str = "",
+    tactile_args: tuple[str, ...] = (),
+    pointcloud_points: int = 1024,
+    num_seeds: int = DEFAULT_AUTO_EVAL_NUM_SEEDS,
+):
     """Run a manifest-driven evaluation sweep on the current H100 image."""
     emit_runtime_diagnostics(H100_PROBE_PROFILE)
-    _run_eval_sweep(manifest, output_dir=output_dir, dry_run=dry_run)
+    _run_eval_sweep(
+        manifest,
+        output_dir=output_dir,
+        dry_run=dry_run,
+        wandb_name=wandb_name,
+        wandb_group=wandb_group,
+        auto_run_name=auto_run_name,
+        tactile_args=tactile_args,
+        pointcloud_points=pointcloud_points,
+        num_seeds=num_seeds,
+    )
 
 
 @app.function(**_modal_function_kwargs(
@@ -967,10 +1334,30 @@ def eval_sweep_h100_probe_remote(manifest: str, output_dir: str = "", dry_run: b
     gpu=RUNTIME_PROFILES[H100_COMPAT_PROFILE].gpu,
     function_env=RUNTIME_PROFILES[H100_COMPAT_PROFILE].function_env,
 ))
-def eval_sweep_h100_compat_remote(manifest: str, output_dir: str = "", dry_run: bool = False):
+def eval_sweep_h100_compat_remote(
+    manifest: str,
+    output_dir: str = "",
+    dry_run: bool = False,
+    wandb_name: str = "",
+    wandb_group: str = "eval",
+    auto_run_name: str = "",
+    tactile_args: tuple[str, ...] = (),
+    pointcloud_points: int = 1024,
+    num_seeds: int = DEFAULT_AUTO_EVAL_NUM_SEEDS,
+):
     """Run a manifest-driven evaluation sweep on the alternate H100 compatibility image."""
     emit_runtime_diagnostics(H100_COMPAT_PROFILE)
-    _run_eval_sweep(manifest, output_dir=output_dir, dry_run=dry_run)
+    _run_eval_sweep(
+        manifest,
+        output_dir=output_dir,
+        dry_run=dry_run,
+        wandb_name=wandb_name,
+        wandb_group=wandb_group,
+        auto_run_name=auto_run_name,
+        tactile_args=tactile_args,
+        pointcloud_points=pointcloud_points,
+        num_seeds=num_seeds,
+    )
 
 
 @app.local_entrypoint()
@@ -979,6 +1366,8 @@ def eval_sweep(
     output_dir: str = "",
     runtime_profile: str = DEFAULT_RUNTIME_PROFILE,
     dry_run: bool = False,
+    wandb_name: str = "",
+    wandb_group: str = "eval",
 ):
     """
     Run a manifest-driven eval sweep on Modal.
@@ -988,9 +1377,51 @@ def eval_sweep(
         output_dir: Optional output directory. Defaults to outputs/eval_sweeps/<manifest>_<timestamp>/ on the volume.
         runtime_profile: Modal runtime profile. One of t4_stable, a100_probe, a100_compat, h100_stable, h100_probe, h100_compat.
         dry_run: Prepare cases without running Isaac Gym evals.
+        wandb_name: Optional W&B run name for summary tables and plots.
+        wandb_group: W&B group for the eval summary run.
     """
     remote_fn = get_eval_sweep_remote_function(runtime_profile)
-    remote_fn.remote(manifest, output_dir, dry_run)
+    remote_fn.remote(manifest, output_dir, dry_run, wandb_name, wandb_group)
+
+
+@app.local_entrypoint()
+def stage2_eval(
+    run_name: str,
+    overrides: str = "",
+    runtime_profile: str = DEFAULT_RUNTIME_PROFILE,
+    tactile: bool = False,
+    pointcloud_points: int = 1024,
+    num_seeds: int = DEFAULT_AUTO_EVAL_NUM_SEEDS,
+    dry_run: bool = False,
+):
+    """
+    Run only the automatic Stage 2 BTG mean-object eval sweep for an existing run.
+
+    Args:
+        run_name: Existing training run name with a Stage 2 checkpoint.
+        overrides: Extra Hydra overrides used to infer tactile/point-cloud eval settings.
+        runtime_profile: Modal runtime profile.
+        tactile: When true, append Stage 2 tactile-history defaults before eval.
+        pointcloud_points: Point cloud resolution for shape encoding. Must be 100 or 1024.
+        num_seeds: Number of eval seeds per BTG object.
+        dry_run: Prepare cases without running Isaac Gym evals.
+    """
+    extra_args = parse_overrides(overrides)
+    pointcloud_args = with_pointcloud_overrides(extra_args, pointcloud_points=pointcloud_points)
+    tactile_args = with_tactile_overrides(pointcloud_args, tactile=tactile)
+    eval_pointcloud_points = int(_override_value(pointcloud_args, "task.env.hora.nPointCloudPts") or pointcloud_points)
+    remote_fn = get_eval_sweep_remote_function(runtime_profile)
+    remote_fn.remote(
+        "",
+        get_auto_eval_output_dir(run_name),
+        dry_run,
+        "" if dry_run else get_auto_eval_wandb_name(run_name),
+        "eval",
+        run_name,
+        tactile_args,
+        eval_pointcloud_points,
+        num_seeds,
+    )
 
 
 @app.local_entrypoint()
@@ -1001,6 +1432,9 @@ def main(
     overrides: str = "",
     runtime_profile: str = DEFAULT_RUNTIME_PROFILE,
     tactile: bool = False,
+    pointcloud_points: int = 1024,
+    auto_eval: bool = False,
+    auto_eval_num_seeds: int = DEFAULT_AUTO_EVAL_NUM_SEEDS,
 ):
     """
     Train HORA on Modal.
@@ -1012,6 +1446,9 @@ def main(
         overrides: Extra Hydra overrides passed to train.py.
         runtime_profile: Modal runtime profile. One of t4_stable, a100_probe, a100_compat, h100_stable, h100_probe, h100_compat.
         tactile: When true, append the split tactile obs/history flags to stages 2 and 3.
+        pointcloud_points: Point cloud resolution for shape encoding. Must be 100 or 1024.
+        auto_eval: Run a Stage 2 BTG1-BTG13 mean-object eval sweep after Stage 2 completes.
+        auto_eval_num_seeds: Number of eval seeds per BTG object for --auto-eval.
     """
     run_requested_stages(
         run_name,
@@ -1020,4 +1457,7 @@ def main(
         extra_args=parse_overrides(overrides),
         runtime_profile=runtime_profile,
         tactile=tactile,
+        pointcloud_points=pointcloud_points,
+        auto_eval=auto_eval,
+        auto_eval_num_seeds=auto_eval_num_seeds,
     )

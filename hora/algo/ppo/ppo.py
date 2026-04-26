@@ -42,6 +42,7 @@ class PPO(object):
         self.priv_info_dim = self.ppo_config['priv_info_dim']
         self.priv_info = self.ppo_config['priv_info']
         self.proprio_adapt = self.ppo_config['proprio_adapt']
+        self.use_shape_priv_info = self.ppo_config.get('use_shape_priv_info', False)
         # ---- Model ----
         net_config = {
             'actor_units': self.network_config.mlp.units,
@@ -51,6 +52,9 @@ class PPO(object):
             'priv_info': self.priv_info,
             'proprio_adapt': self.proprio_adapt,
             'priv_info_dim': self.priv_info_dim,
+            'use_shape_priv_info': self.use_shape_priv_info,
+            'shape_embed_dim': self.ppo_config.get('shape_embed_dim', 32),
+            'pointnet_units': self.ppo_config.get('pointnet_units', [32, 32, 32]),
         }
         self.model = ActorCritic(net_config)
         self.model.to(self.device)
@@ -102,6 +106,7 @@ class PPO(object):
         self.storage = ExperienceBuffer(
             self.num_actors, self.horizon_length, self.batch_size, self.minibatch_size, self.obs_shape[0],
             self.actions_num, self.priv_info_dim, self.device,
+            point_cloud_shape=(self.ppo_config.get('n_pointcloud_pts', 100), 3) if self.use_shape_priv_info else None,
         )
 
         batch_size = self.num_actors
@@ -153,6 +158,8 @@ class PPO(object):
             'obs': processed_obs,
             'priv_info': obs_dict['priv_info'],
         }
+        if self.use_shape_priv_info:
+            input_dict['point_cloud'] = obs_dict['point_cloud']
         res_dict = self.model.act(input_dict)
         res_dict['values'] = self.value_mean_std(res_dict['values'], True)
         return res_dict
@@ -250,8 +257,10 @@ class PPO(object):
         for _ in range(0, self.mini_epochs_num):
             ep_kls = []
             for i in range(len(self.storage)):
+                batch = self.storage[i]
                 value_preds, old_action_log_probs, advantage, old_mu, old_sigma, \
-                    returns, actions, obs, priv_info = self.storage[i]
+                    returns, actions, obs, priv_info = batch[:9]
+                point_cloud = batch[9] if len(batch) > 9 else None
 
                 obs = self.running_mean_std(obs)
                 batch_dict = {
@@ -259,6 +268,8 @@ class PPO(object):
                     'obs': obs,
                     'priv_info': priv_info,
                 }
+                if point_cloud is not None:
+                    batch_dict['point_cloud'] = point_cloud
                 res_dict = self.model(batch_dict)
                 action_log_probs = res_dict['prev_neglogp']
                 values = res_dict['values']
@@ -322,6 +333,8 @@ class PPO(object):
             # collect o_t
             self.storage.update_data('obses', n, self.obs['obs'])
             self.storage.update_data('priv_info', n, self.obs['priv_info'])
+            if self.use_shape_priv_info:
+                self.storage.update_data('point_clouds', n, self.obs['point_cloud'])
             for k in ['actions', 'neglogpacs', 'values', 'mus', 'sigmas']:
                 self.storage.update_data(k, n, res_dict[k])
             # do env step
