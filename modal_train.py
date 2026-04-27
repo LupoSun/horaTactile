@@ -778,6 +778,76 @@ def _run_eval_sweep(
     _run_with_periodic_commits(cmd)
 
 
+def build_record_command(
+    checkpoint: str,
+    stage: int,
+    object_type: str,
+    output: str,
+    overrides: str = "",
+    tactile_obs: bool = False,
+    tactile_hist: bool = False,
+    steps: int = 400,
+    fps: int = 20,
+    width: int = 960,
+    height: int = 540,
+) -> list[str]:
+    cmd = [
+        CONDA_PYTHON,
+        "scripts/record_policy.py",
+        "--checkpoint", checkpoint,
+        "--stage", str(stage),
+        "--object-type", object_type,
+        "--output", output,
+        "--steps", str(steps),
+        "--fps", str(fps),
+        "--width", str(width),
+        "--height", str(height),
+    ]
+    if tactile_obs:
+        cmd.append("--tactile-obs")
+    if tactile_hist:
+        cmd.append("--tactile-hist")
+    if overrides:
+        cmd.extend(["--overrides", overrides])
+    return cmd
+
+
+def _run_record(
+    checkpoint: str,
+    stage: int,
+    object_type: str,
+    output: str,
+    overrides: str = "",
+    tactile_obs: bool = False,
+    tactile_hist: bool = False,
+    steps: int = 400,
+    fps: int = 20,
+    width: int = 960,
+    height: int = 540,
+):
+    setup_project_symlinks()
+    subprocess.run(
+        [CONDA_PYTHON, "-m", "pip", "install", "imageio", "imageio-ffmpeg", "--quiet"],
+        check=True,
+        cwd=PROJECT_DIR,
+    )
+    cmd = build_record_command(
+        checkpoint=checkpoint,
+        stage=stage,
+        object_type=object_type,
+        output=output,
+        overrides=overrides,
+        tactile_obs=tactile_obs,
+        tactile_hist=tactile_hist,
+        steps=steps,
+        fps=fps,
+        width=width,
+        height=height,
+    )
+    subprocess.run(cmd, check=True, cwd=PROJECT_DIR)
+    volume.commit()
+
+
 def _run_stage(stage: int, run_name: str, seed: int = 0, extra_args: tuple[str, ...] = (), tactile: bool = False):
     setup_project_symlinks()
     if stage == 1:
@@ -1358,6 +1428,102 @@ def eval_sweep_h100_compat_remote(
         pointcloud_points=pointcloud_points,
         num_seeds=num_seeds,
     )
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=3600,
+    image=RUNTIME_PROFILES[A100_COMPAT_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[A100_COMPAT_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[A100_COMPAT_PROFILE].function_env,
+))
+def record_a100_compat_remote(
+    checkpoint: str,
+    stage: int,
+    object_type: str,
+    output: str,
+    overrides: str = "",
+    tactile_obs: bool = False,
+    tactile_hist: bool = False,
+    steps: int = 400,
+    fps: int = 20,
+    width: int = 960,
+    height: int = 540,
+):
+    """Record a policy rollout to GIF on the A100 compat image."""
+    emit_runtime_diagnostics(A100_COMPAT_PROFILE)
+    _run_record(
+        checkpoint=checkpoint,
+        stage=stage,
+        object_type=object_type,
+        output=output,
+        overrides=overrides,
+        tactile_obs=tactile_obs,
+        tactile_hist=tactile_hist,
+        steps=steps,
+        fps=fps,
+        width=width,
+        height=height,
+    )
+
+
+@app.local_entrypoint()
+def record(
+    checkpoint: str,
+    object_type: str,
+    stage: int = 2,
+    output: str = "",
+    overrides: str = "",
+    tactile_obs: bool = False,
+    tactile_hist: bool = False,
+    steps: int = 400,
+    fps: int = 20,
+    width: int = 960,
+    height: int = 540,
+    runtime_profile: str = A100_COMPAT_PROFILE,
+):
+    """
+    Record a policy rollout on Modal and download the resulting GIF.
+
+    Args:
+        checkpoint: Repo-relative checkpoint path, e.g. outputs/AllegroHandHora/<run>/stage2_nn/model_best.ckpt.
+        object_type: task.env.object.type override, e.g. custom_btg9_mean.
+        stage: Training stage (1 or 2).
+        output: Output GIF path (repo-relative). Auto-derived from checkpoint and object_type if omitted.
+        overrides: Extra Hydra overrides as a shell-style string.
+        tactile_obs: Include tactile values in the policy observation.
+        tactile_hist: Include tactile values in the adaptation history.
+        steps: Number of policy steps to record.
+        fps: Playback FPS for the output GIF.
+        width: Capture width in pixels.
+        height: Capture height in pixels.
+        runtime_profile: Modal runtime profile (default: a100_compat).
+    """
+    if not output:
+        ckpt_path = Path(checkpoint)
+        run_name = ckpt_path.parts[-3] if len(ckpt_path.parts) >= 3 else ckpt_path.stem
+        safe_object = object_type.replace("+", "_")
+        output = f"outputs/recordings/{run_name}__stage{stage}__{safe_object}.gif"
+
+    volume_output = output if output.startswith("/") else f"{VOLUME_PATH}/{output}"
+
+    print(f"[hora] Recording {object_type} with {checkpoint} -> {output} [{runtime_profile}]")
+    record_a100_compat_remote.remote(
+        checkpoint,
+        stage,
+        object_type,
+        volume_output,
+        overrides,
+        tactile_obs,
+        tactile_hist,
+        steps,
+        fps,
+        width,
+        height,
+    )
+    print(f"[hora] Done. GIF saved on volume at {volume_output}")
+    print(f"[hora] To download: modal volume get hora-volume {volume_output} {output}")
 
 
 @app.local_entrypoint()
