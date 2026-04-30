@@ -4,12 +4,20 @@ import wandb
 from omegaconf import OmegaConf
 
 
+DEFAULT_WANDB_ENTITY = "haojunzhuang"
+
+
 def resolve_wandb_mode(env=None) -> str:
     env = os.environ if env is None else env
     explicit_mode = env.get("WANDB_MODE")
     if explicit_mode:
         return explicit_mode
     return "online" if env.get("WANDB_API_KEY") else "offline"
+
+
+def resolve_wandb_entity(env=None) -> str:
+    env = os.environ if env is None else env
+    return env.get("WANDB_ENTITY") or DEFAULT_WANDB_ENTITY
 
 
 def get_wandb_config(full_config):
@@ -28,6 +36,7 @@ def init_wandb_run(full_config, name: str, group: str, project: str = "hora"):
     if mode == "disabled":
         return None
     return wandb.init(
+        entity=resolve_wandb_entity(),
         project=project,
         name=stage_wandb_name(name, group),
         group=group,

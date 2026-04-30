@@ -252,7 +252,7 @@ conda activate hora2
 export WANDB_API_KEY=your_key_here
 
 modal run --detach modal_train.py::main \
---run-name mixed_pointnet_tactile_04261103 \
+--run-name mixed_pointnet_tactile_04261105 \
 --runtime-profile a100_compat \
 --stage both \
 --tactile \

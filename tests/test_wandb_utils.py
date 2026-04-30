@@ -112,9 +112,15 @@ def test_resolve_wandb_mode_prefers_env_override():
     assert wandb_utils.resolve_wandb_mode({"WANDB_API_KEY": "secret", "WANDB_MODE": "disabled"}) == "disabled"
 
 
+def test_resolve_wandb_entity_defaults_to_haojunzhuang():
+    assert wandb_utils.resolve_wandb_entity({}) == "haojunzhuang"
+    assert wandb_utils.resolve_wandb_entity({"WANDB_ENTITY": "custom-team"}) == "custom-team"
+
+
 def test_init_wandb_run_passes_resolved_config(monkeypatch):
     init_kwargs = {}
     monkeypatch.setenv("WANDB_MODE", "offline")
+    monkeypatch.delenv("WANDB_ENTITY", raising=False)
     monkeypatch.delenv("WANDB_API_KEY", raising=False)
     monkeypatch.setattr(wandb_utils.wandb, "init", lambda **kwargs: init_kwargs.update(kwargs) or kwargs)
 
@@ -122,6 +128,7 @@ def test_init_wandb_run_passes_resolved_config(monkeypatch):
     wandb_utils.init_wandb_run(config, name="demo", group="stage1")
 
     assert init_kwargs["project"] == "hora"
+    assert init_kwargs["entity"] == "haojunzhuang"
     assert init_kwargs["name"] == "demo_s1"
     assert init_kwargs["group"] == "stage1"
     assert init_kwargs["mode"] == "offline"

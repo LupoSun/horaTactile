@@ -237,7 +237,7 @@ def init_sweep_wandb_run(
 
     try:
         import wandb
-        from hora.utils.wandb_utils import resolve_wandb_mode
+        from hora.utils.wandb_utils import resolve_wandb_entity, resolve_wandb_mode
     except ImportError as exc:
         raise RuntimeError("wandb is required to log eval sweep results") from exc
 
@@ -248,6 +248,7 @@ def init_sweep_wandb_run(
         return wandb.run
 
     run = wandb.init(
+        entity=resolve_wandb_entity(),
         project=project,
         name=run_name,
         group=group,
@@ -421,7 +422,7 @@ def log_sweep_to_wandb(
 
     try:
         import wandb
-        from hora.utils.wandb_utils import resolve_wandb_mode
+        from hora.utils.wandb_utils import resolve_wandb_entity, resolve_wandb_mode
     except ImportError as exc:
         raise RuntimeError("wandb is required to log eval sweep results") from exc
 
@@ -432,6 +433,7 @@ def log_sweep_to_wandb(
     run = wandb.run
     if run is None:
         run = wandb.init(
+            entity=resolve_wandb_entity(),
             project=project,
             name=run_name,
             group=group,

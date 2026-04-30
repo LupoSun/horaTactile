@@ -214,15 +214,23 @@ def _build_modal_image(base_image: str, torch_install: str):
 
 app = modal.App(APP_NAME)
 
-# Forward WANDB_API_KEY if set locally.
-function_secrets = []
-if os.environ.get("WANDB_API_KEY"):
-    function_secrets.append(modal.Secret.from_dict({"WANDB_API_KEY": os.environ["WANDB_API_KEY"]}))
+WANDB_ENTITY = os.environ.get("WANDB_ENTITY", "haojunzhuang")
+
+# Keep Modal dependencies stable across local and remote module imports.
+function_secrets = [
+    modal.Secret.from_dict(
+        {
+            "WANDB_API_KEY": os.environ.get("WANDB_API_KEY", ""),
+            "WANDB_ENTITY": WANDB_ENTITY,
+        }
+    )
+]
 
 env = {
     "PYTHONPATH": PROJECT_DIR,
     "PYTHONUNBUFFERED": "1",
     "WANDB_DIR": f"{VOLUME_PATH}/wandb",
+    "WANDB_ENTITY": WANDB_ENTITY,
     "MPLCONFIGDIR": "/tmp/matplotlib",
 }
 
