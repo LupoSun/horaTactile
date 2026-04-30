@@ -33,7 +33,7 @@ Usage:
     modal run --detach modal_train.py::main --run-name ppo_gru --stage both --rl-variant ppo_recurrent --tactile
     modal run --detach modal_train.py::main --run-name ppo_asym --stage both --rl-variant ppo_asym_critic --tactile
     modal run --detach modal_train.py::main --run-name ppo_tuned --stage both --rl-variant ppo_tuned --tactile
-    modal run --detach modal_train.py::main --run-name td3_s1 --stage 1 --rl-variant td3 --pointcloud-points 100
+    modal run --detach modal_train.py::main --run-name td3 --stage both --rl-variant td3 --pointcloud-points 100
 
     # Compare baseline Stage 2 vs tactile-enabled Stage 2
     modal run modal_train.py::main --run-name baseline --runtime-profile h100_stable --stage 2
@@ -810,6 +810,94 @@ def _ensure_eval_pointcloud_sidecars(manifest: str):
             _generate_mesh_pointcloud_sidecar(asset_file, n_points)
 
 
+def _resolve_remote_path(path: str) -> Path:
+    candidate = Path(path)
+    if candidate.is_absolute():
+        return candidate
+    return Path(PROJECT_DIR) / candidate
+
+
+def _infer_tactile_flags_from_checkpoint(checkpoint_path: Path) -> tuple[bool | None, bool | None]:
+    script = """
+import json
+import sys
+import torch
+
+checkpoint = torch.load(sys.argv[1], map_location="cpu")
+running_mean_std = checkpoint.get("running_mean_std", {})
+obs_mean = running_mean_std.get("running_mean")
+obs_dim = int(obs_mean.numel()) if obs_mean is not None else None
+
+sa_mean_std = checkpoint.get("sa_mean_std", {})
+hist_mean = sa_mean_std.get("running_mean")
+hist_dim = int(hist_mean.shape[-1]) if hist_mean is not None and hist_mean.ndim >= 1 else None
+
+print(json.dumps({"obs_dim": obs_dim, "hist_dim": hist_dim}))
+"""
+    result = subprocess.run(
+        [CONDA_PYTHON, "-c", script, str(checkpoint_path)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    shapes = json.loads(result.stdout)
+    obs_dim = shapes.get("obs_dim")
+    hist_dim = shapes.get("hist_dim")
+
+    use_tactile_obs = None
+    if obs_dim == 96:
+        use_tactile_obs = False
+    elif obs_dim == 132:
+        use_tactile_obs = True
+
+    use_tactile_hist = None
+    if hist_dim == 32:
+        use_tactile_hist = False
+    elif hist_dim == 44:
+        use_tactile_hist = True
+
+    return use_tactile_obs, use_tactile_hist
+
+
+def _sync_eval_tactile_flags_with_checkpoints(manifest: str) -> str:
+    manifest_path = Path(manifest)
+    if not manifest_path.is_absolute():
+        manifest_path = Path(PROJECT_DIR) / manifest_path
+    data = json.loads(manifest_path.read_text())
+    changed = False
+
+    for model in data.get("models", []):
+        checkpoint = model.get("checkpoint")
+        if not checkpoint:
+            continue
+        checkpoint_path = _resolve_remote_path(checkpoint)
+        if not checkpoint_path.exists():
+            continue
+        use_tactile_obs, use_tactile_hist = _infer_tactile_flags_from_checkpoint(checkpoint_path)
+        if use_tactile_obs is not None and model.get("use_tactile_obs") != use_tactile_obs:
+            print(
+                "[hora] Eval manifest tactile obs flag corrected from checkpoint: "
+                f"{model.get('name', checkpoint)} use_tactile_obs={use_tactile_obs}"
+            )
+            model["use_tactile_obs"] = use_tactile_obs
+            changed = True
+        if use_tactile_hist is not None and model.get("use_tactile_hist") != use_tactile_hist:
+            print(
+                "[hora] Eval manifest tactile hist flag corrected from checkpoint: "
+                f"{model.get('name', checkpoint)} use_tactile_hist={use_tactile_hist}"
+            )
+            model["use_tactile_hist"] = use_tactile_hist
+            changed = True
+
+    if not changed:
+        return str(manifest_path)
+
+    synced_manifest_path = Path(VOLUME_PATH) / "eval_manifests" / f"{manifest_path.stem}_tactile_synced.json"
+    synced_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    synced_manifest_path.write_text(json.dumps(data, indent=2))
+    return str(synced_manifest_path)
+
+
 def _run_eval_sweep(
     manifest: str,
     output_dir: str = "",
@@ -829,6 +917,7 @@ def _run_eval_sweep(
             pointcloud_points=pointcloud_points,
             num_seeds=num_seeds,
         )
+    manifest = _sync_eval_tactile_flags_with_checkpoints(manifest)
     if not dry_run:
         _ensure_eval_pointcloud_sidecars(manifest)
     cmd = build_eval_sweep_command(
@@ -903,14 +992,16 @@ def run_requested_stages(
 ):
     if stage not in ("1", "2", "3", "both", "all"):
         raise ValueError(f"Unsupported stage selection: {stage}")
-    if rl_variant == RL_VARIANT_TD3 and stage != "1":
-        raise ValueError("TD3 is currently a Stage 1-only off-policy baseline; use --stage 1")
     profile = get_runtime_profile(runtime_profile)
     stage1_remote, stage2_remote, stage3_remote = get_stage_remote_functions(profile.name)
-    variant_args = with_rl_variant_overrides(extra_args, rl_variant=rl_variant)
-    pointcloud_args = with_pointcloud_overrides(variant_args, pointcloud_points=pointcloud_points)
-    stage1_args = with_tactile_overrides(pointcloud_args, tactile=tactile, tactile_hist=False)
-    stage2_args = with_tactile_overrides(pointcloud_args, tactile=tactile, tactile_hist=True)
+    stage1_variant_args = with_rl_variant_overrides(extra_args, rl_variant=rl_variant)
+    stage2_variant = RL_VARIANT_PPO if rl_variant == RL_VARIANT_TD3 else rl_variant
+    stage2_variant_args = with_rl_variant_overrides(extra_args, rl_variant=stage2_variant)
+    stage1_pointcloud_args = with_pointcloud_overrides(stage1_variant_args, pointcloud_points=pointcloud_points)
+    stage2_pointcloud_args = with_pointcloud_overrides(stage2_variant_args, pointcloud_points=pointcloud_points)
+    stage1_args = with_tactile_overrides(stage1_pointcloud_args, tactile=tactile, tactile_hist=False)
+    stage2_args = with_tactile_overrides(stage2_pointcloud_args, tactile=tactile, tactile_hist=True)
+    pointcloud_args = stage2_pointcloud_args
     eval_pointcloud_points = int(_override_value(pointcloud_args, "task.env.hora.nPointCloudPts") or pointcloud_points)
 
     if stage in ("1", "both", "all"):
@@ -1477,9 +1568,8 @@ def stage2_eval(
         dry_run: Prepare cases without running Isaac Gym evals.
     """
     extra_args = parse_overrides(overrides)
-    if rl_variant == RL_VARIANT_TD3:
-        raise ValueError("TD3 checkpoints are Stage 1-only and are not compatible with Stage 2 eval")
-    variant_args = with_rl_variant_overrides(extra_args, rl_variant=rl_variant)
+    stage2_variant = RL_VARIANT_PPO if rl_variant == RL_VARIANT_TD3 else rl_variant
+    variant_args = with_rl_variant_overrides(extra_args, rl_variant=stage2_variant)
     pointcloud_args = with_pointcloud_overrides(variant_args, pointcloud_points=pointcloud_points)
     tactile_args = with_tactile_overrides(pointcloud_args, tactile=tactile)
     eval_pointcloud_points = int(_override_value(pointcloud_args, "task.env.hora.nPointCloudPts") or pointcloud_points)

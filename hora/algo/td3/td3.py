@@ -315,6 +315,7 @@ class TD3(object):
 
     def save(self, name):
         weights = {
+            "model": self.actor.state_dict(),
             "actor": self.actor.state_dict(),
             "critic": self.critic.state_dict(),
             "running_mean_std": self.running_mean_std.state_dict(),

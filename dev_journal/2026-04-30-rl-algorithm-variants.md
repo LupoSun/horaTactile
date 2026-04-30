@@ -60,8 +60,10 @@ train.ppo.td3_learning_starts=80000
 train.ppo.td3_replay_size=100000
 ```
 
-TD3 is currently Stage 1-only and saves an actor/critic checkpoint format that is not
-compatible with Stage 2 `ProprioAdapt`.
+TD3 is an off-policy Stage 1 algorithm. Its checkpoint now also saves the actor under the
+PPO-compatible `model` key, so Stage 2 `ProprioAdapt` can load the TD3 actor and train the
+adaptation module against it. The Modal helper keeps the `train.algo=TD3` override on
+Stage 1 only; Stage 2 still runs with `train.algo=ProprioAdapt`.
 
 # Commands Ran
 
@@ -134,12 +136,16 @@ modal run --detach modal_train.py::main \
 --auto-eval-num-seeds 1
 ```
 
-<!-- TD3
+TD3
 ```bash
 modal run --detach modal_train.py::main \
---run-name mixed_pointnet_td3_s1 \
+--run-name mixed_pointnet_tactile_td3 \
 --runtime-profile a100_compat \
---stage 1 \
+--stage both \
+--tactile \
 --rl-variant td3 \
 --pointcloud-points 200 \
---overrides "train.ppo.max_agent_steps=750000000" -->
+--overrides "train.ppo.max_agent_steps=750000000" \
+--auto-eval \
+--auto-eval-num-seeds 1
+```

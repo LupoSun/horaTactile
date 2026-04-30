@@ -538,13 +538,47 @@ def test_run_requested_stages_applies_rl_variant_to_stage1_and_stage2(monkeypatc
     ]
 
 
-def test_run_requested_stages_rejects_td3_after_stage1():
-    with pytest.raises(ValueError, match="Stage 1-only"):
-        modal_train.run_requested_stages(
+def test_run_requested_stages_keeps_td3_stage1_only_overrides_out_of_stage2(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        modal_train,
+        "train_stage1_h100_stable_remote",
+        SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("stage1", run_name, seed, extra_args))),
+    )
+    monkeypatch.setattr(
+        modal_train,
+        "train_stage2_h100_stable_remote",
+        SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("stage2", run_name, seed, extra_args))),
+    )
+    monkeypatch.setattr(
+        modal_train,
+        "train_stage3_h100_stable_remote",
+        SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("stage3", run_name, seed, extra_args))),
+    )
+
+    modal_train.run_requested_stages(
+        "demo",
+        seed=6,
+        stage="both",
+        runtime_profile=modal_train.H100_STABLE_PROFILE,
+        rl_variant=modal_train.RL_VARIANT_TD3,
+    )
+
+    assert calls == [
+        (
+            "stage1",
             "demo",
-            stage="both",
-            rl_variant=modal_train.RL_VARIANT_TD3,
-        )
+            6,
+            (
+                "train.algo=TD3",
+                "train.ppo.td3_batch_size=32768",
+                "train.ppo.td3_learning_starts=80000",
+                "train.ppo.td3_replay_size=100000",
+                *DEFAULT_POINTCLOUD_ARGS,
+            ),
+        ),
+        ("stage2", "demo", 6, DEFAULT_POINTCLOUD_ARGS),
+    ]
 
 
 def test_run_requested_stages_applies_tactile_to_stage1_and_stage2(monkeypatch):

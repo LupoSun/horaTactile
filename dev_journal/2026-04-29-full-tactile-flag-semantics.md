@@ -96,10 +96,14 @@ modal run --detach modal_train.py::main \
 --run-name fullbaseline_04291133 \
 --runtime-profile a100_compat \
 --stage both \
---auto-eval \
---auto-eval-num-seeds 1 \
 --pointcloud-points 200 \
 --overrides "train.ppo.max_agent_steps=750000000"
+
+modal run --detach modal_train.py::stage2_eval \
+--run-name fullbaseline_04291133 \
+--runtime-profile a100_compat \
+--pointcloud-points 200 \
+--num-seeds 3
 ```
 
 ## Full Tactile
@@ -114,5 +118,11 @@ modal run --detach modal_train.py::main \
 --auto-eval-num-seeds 1 \
 --pointcloud-points 200 \
 --overrides "train.ppo.max_agent_steps=750000000"
-```
 
+modal run --detach modal_train.py::stage2_eval \
+--run-name fulltactile_04291133 \
+--runtime-profile a100_compat \
+--tactile \
+--pointcloud-points 200 \
+--num-seeds 3
+```
