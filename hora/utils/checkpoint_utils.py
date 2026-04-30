@@ -24,6 +24,7 @@ _STAGE_CHECKPOINT_INFO = {
 
 _ALGO_TO_STAGE = {
     "PPO": 1,
+    "TD3": 1,
     "ProprioAdapt": 2,
 }
 

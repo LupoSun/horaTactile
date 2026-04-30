@@ -279,6 +279,67 @@ def test_actor_critic_supports_shape_privileged_pointnet():
     assert extrin_gt is None
 
 
+def test_actor_critic_supports_recurrent_observation_encoder():
+    model = padapt_module.ActorCritic(
+        {
+            "actor_units": [8, 4],
+            "priv_mlp_units": [4, 8],
+            "actions_num": 2,
+            "input_shape": (12,),
+            "priv_info": True,
+            "proprio_adapt": False,
+            "priv_info_dim": 9,
+            "recurrent_obs": True,
+            "recurrent_obs_seq_len": 3,
+            "recurrent_hidden_size": 6,
+        }
+    )
+
+    mu, logstd, value, extrin, extrin_gt = model._actor_critic(
+        {
+            "obs": torch.randn(2, 12),
+            "priv_info": torch.randn(2, 9),
+        }
+    )
+
+    assert mu.shape == (2, 2)
+    assert logstd.shape == (2, 2)
+    assert value.shape == (2, 1)
+    assert extrin.shape == (2, 8)
+    assert extrin_gt is None
+
+
+def test_actor_critic_supports_asymmetric_critic_only_privilege():
+    model = padapt_module.ActorCritic(
+        {
+            "actor_units": [8, 4],
+            "priv_mlp_units": [4, 8],
+            "actions_num": 2,
+            "input_shape": (3,),
+            "priv_info": True,
+            "proprio_adapt": False,
+            "priv_info_dim": 9,
+            "asymmetric_critic": True,
+            "actor_use_privileged_info": False,
+        }
+    )
+
+    mu, logstd, value, extrin, extrin_gt = model._actor_critic(
+        {
+            "obs": torch.randn(2, 3),
+            "priv_info": torch.randn(2, 9),
+        }
+    )
+
+    assert model.actor_mlp.mlp[0].in_features == 3
+    assert model.critic_mlp.mlp[0].in_features == 11
+    assert mu.shape == (2, 2)
+    assert logstd.shape == (2, 2)
+    assert value.shape == (2, 1)
+    assert extrin.shape == (2, 8)
+    assert extrin_gt is None
+
+
 def test_proprio_adapt_predicts_shape_aware_extrinsics():
     model = padapt_module.ActorCritic(
         {

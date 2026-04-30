@@ -46,6 +46,20 @@ ppo:
   shape_embed_dim: 32
   pointnet_units: [32, 32, 32]
   n_pointcloud_pts: 1024
+  asymmetric_critic: False
+  actor_use_privileged_info: True
+  recurrent_obs: False
+  recurrent_obs_seq_len: 3
+  recurrent_hidden_size: 128
+  td3_replay_size: 100000
+  td3_batch_size: 32768
+  td3_learning_starts: 80000
+  td3_policy_delay: 2
+  td3_exploration_noise: 0.1
+  td3_target_noise: 0.2
+  td3_target_noise_clip: 0.5
+  td3_target_tau: 0.005
+  td3_reward_scale: 0.01
   proprio_adapt: False
   adapt_latent_loss_coef: 1.0
   adapt_action_loss_coef: 1.0

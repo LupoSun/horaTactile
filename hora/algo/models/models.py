@@ -69,6 +69,31 @@ class PointNetEncoder(nn.Module):
         return point_features.max(dim=1).values
 
 
+class ObservationEncoder(nn.Module):
+    def __init__(self, input_size, recurrent=False, seq_len=3, hidden_size=128):
+        super(ObservationEncoder, self).__init__()
+        self.input_size = input_size
+        self.recurrent = recurrent
+        self.seq_len = seq_len
+        self.hidden_size = hidden_size
+        if recurrent:
+            if input_size % seq_len != 0:
+                raise ValueError(f"Cannot split observation dim {input_size} into {seq_len} recurrent frames")
+            self.frame_dim = input_size // seq_len
+            self.gru = nn.GRU(self.frame_dim, hidden_size, batch_first=True)
+            self.output_size = hidden_size
+        else:
+            self.frame_dim = input_size
+            self.output_size = input_size
+
+    def forward(self, obs):
+        if not self.recurrent:
+            return obs
+        obs_seq = obs.view(obs.shape[0], self.seq_len, self.frame_dim)
+        _, hidden = self.gru(obs_seq)
+        return hidden[-1]
+
+
 class ActorCritic(nn.Module):
     def __init__(self, kwargs):
         nn.Module.__init__(self)
@@ -76,7 +101,7 @@ class ActorCritic(nn.Module):
         input_shape = kwargs.pop('input_shape')
         self.units = kwargs.pop('actor_units')
         self.priv_mlp = kwargs.pop('priv_mlp_units')
-        mlp_input_shape = input_shape[0]
+        obs_input_shape = input_shape[0]
 
         out_size = self.units[-1]
         self.priv_info = kwargs['priv_info']
@@ -84,10 +109,38 @@ class ActorCritic(nn.Module):
         self.use_shape_priv_info = kwargs.get('use_shape_priv_info', False)
         self.shape_embed_dim = kwargs.get('shape_embed_dim', 32)
         self.pointnet_units = kwargs.get('pointnet_units', [32, 32, self.shape_embed_dim])
+        self.asymmetric_critic = kwargs.get('asymmetric_critic', False)
+        self.actor_use_privileged_info = kwargs.get('actor_use_privileged_info', True)
+        self.recurrent_obs = kwargs.get('recurrent_obs', False)
+        self.recurrent_obs_seq_len = kwargs.get('recurrent_obs_seq_len', 3)
+        self.recurrent_hidden_size = kwargs.get('recurrent_hidden_size', 128)
+        self.actor_obs_encoder = ObservationEncoder(
+            obs_input_shape,
+            recurrent=self.recurrent_obs,
+            seq_len=self.recurrent_obs_seq_len,
+            hidden_size=self.recurrent_hidden_size,
+        )
+        self.has_separate_critic = self.asymmetric_critic or not self.actor_use_privileged_info
+        self.critic_obs_encoder = None
+        if self.asymmetric_critic:
+            self.critic_obs_encoder = ObservationEncoder(
+                obs_input_shape,
+                recurrent=self.recurrent_obs,
+                seq_len=self.recurrent_obs_seq_len,
+                hidden_size=self.recurrent_hidden_size,
+            )
+        actor_input_shape = self.actor_obs_encoder.output_size
+        critic_input_shape = (
+            self.critic_obs_encoder.output_size
+            if self.critic_obs_encoder is not None
+            else self.actor_obs_encoder.output_size
+        )
         self.priv_embed_dim = self.priv_mlp[-1] if self.priv_info else 0
         self.extrin_dim = self.priv_embed_dim + (self.shape_embed_dim if self.use_shape_priv_info else 0)
         if self.priv_info:
-            mlp_input_shape += self.extrin_dim
+            if self.actor_use_privileged_info:
+                actor_input_shape += self.extrin_dim
+            critic_input_shape += self.extrin_dim
             self.env_mlp = MLP(units=self.priv_mlp, input_size=kwargs['priv_info_dim'], activation=nn.ReLU)
             if self.use_shape_priv_info:
                 self.pointnet = PointNetEncoder(units=self.pointnet_units)
@@ -95,7 +148,10 @@ class ActorCritic(nn.Module):
             if self.priv_info_stage2:
                 self.adapt_tconv = ProprioAdaptTConv(kwargs.get('hist_obs_dim', 32), output_dim=self.extrin_dim)
 
-        self.actor_mlp = MLP(units=self.units, input_size=mlp_input_shape)
+        self.actor_mlp = MLP(units=self.units, input_size=actor_input_shape)
+        self.critic_mlp = None
+        if self.has_separate_critic:
+            self.critic_mlp = MLP(units=self.units, input_size=critic_input_shape)
         self.value = torch.nn.Linear(out_size, 1)
         self.mu = torch.nn.Linear(out_size, actions_num)
         self.sigma = nn.Parameter(torch.zeros(actions_num, requires_grad=True, dtype=torch.float32), requires_grad=True)
@@ -136,6 +192,10 @@ class ActorCritic(nn.Module):
 
     def _actor_critic(self, obs_dict):
         obs = obs_dict['obs']
+        actor_obs = self.actor_obs_encoder(obs)
+        critic_obs = actor_obs
+        if self.critic_obs_encoder is not None:
+            critic_obs = self.critic_obs_encoder(obs)
         extrin, extrin_gt = None, None
         if self.priv_info:
             if self.priv_info_stage2:
@@ -144,15 +204,17 @@ class ActorCritic(nn.Module):
                 extrin_gt = self._encode_privileged(obs_dict) if 'priv_info' in obs_dict else extrin
                 extrin_gt = torch.tanh(extrin_gt)
                 extrin = torch.tanh(extrin)
-                obs = torch.cat([obs, extrin], dim=-1)
             else:
                 extrin = self._encode_privileged(obs_dict)
                 extrin = torch.tanh(extrin)
-                obs = torch.cat([obs, extrin], dim=-1)
+            if self.actor_use_privileged_info:
+                actor_obs = torch.cat([actor_obs, extrin], dim=-1)
+            critic_obs = torch.cat([critic_obs, extrin], dim=-1)
 
-        x = self.actor_mlp(obs)
-        value = self.value(x)
-        mu = self.mu(x)
+        actor_features = self.actor_mlp(actor_obs)
+        critic_features = self.critic_mlp(critic_obs) if self.critic_mlp is not None else actor_features
+        value = self.value(critic_features)
+        mu = self.mu(actor_features)
         sigma = self.sigma
         return mu, mu * 0 + sigma, value, extrin, extrin_gt
 
@@ -164,7 +226,10 @@ class ActorCritic(nn.Module):
         return torch.cat([phys_embedding, shape_embedding], dim=-1)
 
     def act_from_extrin(self, obs, extrin):
-        x = self.actor_mlp(torch.cat([obs, extrin], dim=-1))
+        actor_obs = self.actor_obs_encoder(obs)
+        if self.actor_use_privileged_info:
+            actor_obs = torch.cat([actor_obs, extrin], dim=-1)
+        x = self.actor_mlp(actor_obs)
         return self.mu(x)
 
     def forward(self, input_dict):

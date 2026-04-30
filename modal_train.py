@@ -29,6 +29,12 @@ Usage:
     # Pass extra Hydra overrides
     modal run modal_train.py::main --run-name my_exp --overrides "task.env.numEnvs=4096 train.ppo.max_agent_steps=1024"
 
+    # Stage 1 RL variants
+    modal run --detach modal_train.py::main --run-name ppo_gru --stage both --rl-variant ppo_recurrent --tactile
+    modal run --detach modal_train.py::main --run-name ppo_asym --stage both --rl-variant ppo_asym_critic --tactile
+    modal run --detach modal_train.py::main --run-name ppo_tuned --stage both --rl-variant ppo_tuned --tactile
+    modal run --detach modal_train.py::main --run-name td3_s1 --stage 1 --rl-variant td3 --pointcloud-points 100
+
     # Compare baseline Stage 2 vs tactile-enabled Stage 2
     modal run modal_train.py::main --run-name baseline --runtime-profile h100_stable --stage 2
     modal run modal_train.py::main --run-name tactile --runtime-profile h100_stable --stage 2 --tactile
@@ -123,6 +129,18 @@ DEFAULT_OUTPUT_PREFIX = "AllegroHandHora"
 TACTILE_CYLINDER_OBJECT_TYPE = "cylinder_default+custom_cylinder_2dcross+custom_cylinder_3dcross"
 TACTILE_CYLINDER_SAMPLE_PROB = "[0.34,0.33,0.33]"
 POINTCLOUD_POINT_CHOICES = (100, 200, 300, 500, 1024)
+RL_VARIANT_PPO = "ppo"
+RL_VARIANT_PPO_RECURRENT = "ppo_recurrent"
+RL_VARIANT_PPO_ASYM_CRITIC = "ppo_asym_critic"
+RL_VARIANT_PPO_TUNED = "ppo_tuned"
+RL_VARIANT_TD3 = "td3"
+RL_VARIANT_CHOICES = (
+    RL_VARIANT_PPO,
+    RL_VARIANT_PPO_RECURRENT,
+    RL_VARIANT_PPO_ASYM_CRITIC,
+    RL_VARIANT_PPO_TUNED,
+    RL_VARIANT_TD3,
+)
 DEFAULT_AUTO_EVAL_NUM_SEEDS = 5
 AUTO_EVAL_OBJECT_INDICES = tuple(range(1, 14))
 ISAACGYM_FILE_ID = "1StaRl_hzYFYbJegQcyT7-yjgutc6C7F9"
@@ -342,6 +360,39 @@ def with_tactile_overrides(
         overrides.append("task.env.hora.useTactileObs=True")
     if not any(arg.startswith("task.env.hora.useTactileHist=") for arg in overrides):
         overrides.append(f"task.env.hora.useTactileHist={'True' if tactile_hist else 'False'}")
+    return tuple(overrides)
+
+
+def with_rl_variant_overrides(extra_args: tuple[str, ...], rl_variant: str = RL_VARIANT_PPO) -> tuple[str, ...]:
+    if rl_variant not in RL_VARIANT_CHOICES:
+        raise ValueError(f"Unsupported RL variant: {rl_variant}. Choose one of {RL_VARIANT_CHOICES}")
+    if rl_variant == RL_VARIANT_PPO:
+        return extra_args
+
+    overrides = list(extra_args)
+
+    def append_if_missing(key: str, value: str):
+        if not any(arg.startswith(f"{key}=") for arg in overrides):
+            overrides.append(f"{key}={value}")
+
+    if rl_variant == RL_VARIANT_PPO_RECURRENT:
+        append_if_missing("train.ppo.recurrent_obs", "True")
+        append_if_missing("train.ppo.recurrent_obs_seq_len", "3")
+        append_if_missing("train.ppo.recurrent_hidden_size", "128")
+    elif rl_variant == RL_VARIANT_PPO_ASYM_CRITIC:
+        append_if_missing("train.ppo.asymmetric_critic", "True")
+        append_if_missing("train.ppo.actor_use_privileged_info", "False")
+    elif rl_variant == RL_VARIANT_PPO_TUNED:
+        append_if_missing("train.ppo.kl_threshold", "0.01")
+        append_if_missing("train.ppo.entropy_coef", "0.001")
+        append_if_missing("train.ppo.horizon_length", "16")
+        append_if_missing("train.ppo.minibatch_size", "32768")
+        append_if_missing("train.ppo.mini_epochs", "4")
+    elif rl_variant == RL_VARIANT_TD3:
+        append_if_missing("train.algo", "TD3")
+        append_if_missing("train.ppo.td3_batch_size", "32768")
+        append_if_missing("train.ppo.td3_learning_starts", "80000")
+        append_if_missing("train.ppo.td3_replay_size", "100000")
     return tuple(overrides)
 
 
@@ -846,14 +897,18 @@ def run_requested_stages(
     runtime_profile: str = DEFAULT_RUNTIME_PROFILE,
     tactile: bool = False,
     pointcloud_points: int = 1024,
+    rl_variant: str = RL_VARIANT_PPO,
     auto_eval: bool = False,
     auto_eval_num_seeds: int = DEFAULT_AUTO_EVAL_NUM_SEEDS,
 ):
     if stage not in ("1", "2", "3", "both", "all"):
         raise ValueError(f"Unsupported stage selection: {stage}")
+    if rl_variant == RL_VARIANT_TD3 and stage != "1":
+        raise ValueError("TD3 is currently a Stage 1-only off-policy baseline; use --stage 1")
     profile = get_runtime_profile(runtime_profile)
     stage1_remote, stage2_remote, stage3_remote = get_stage_remote_functions(profile.name)
-    pointcloud_args = with_pointcloud_overrides(extra_args, pointcloud_points=pointcloud_points)
+    variant_args = with_rl_variant_overrides(extra_args, rl_variant=rl_variant)
+    pointcloud_args = with_pointcloud_overrides(variant_args, pointcloud_points=pointcloud_points)
     stage1_args = with_tactile_overrides(pointcloud_args, tactile=tactile, tactile_hist=False)
     stage2_args = with_tactile_overrides(pointcloud_args, tactile=tactile, tactile_hist=True)
     eval_pointcloud_points = int(_override_value(pointcloud_args, "task.env.hora.nPointCloudPts") or pointcloud_points)
@@ -1404,6 +1459,7 @@ def stage2_eval(
     runtime_profile: str = DEFAULT_RUNTIME_PROFILE,
     tactile: bool = False,
     pointcloud_points: int = 1024,
+    rl_variant: str = RL_VARIANT_PPO,
     num_seeds: int = DEFAULT_AUTO_EVAL_NUM_SEEDS,
     dry_run: bool = False,
 ):
@@ -1416,11 +1472,15 @@ def stage2_eval(
         runtime_profile: Modal runtime profile.
         tactile: When true, append Stage 2 direct tactile actor observations and tactile history before eval.
         pointcloud_points: Point cloud resolution for shape encoding. Must be 100, 200, 300, 500, or 1024.
+        rl_variant: Stage 1 RL variant architecture/hyperparameter preset used by the checkpoint.
         num_seeds: Number of eval seeds per BTG object.
         dry_run: Prepare cases without running Isaac Gym evals.
     """
     extra_args = parse_overrides(overrides)
-    pointcloud_args = with_pointcloud_overrides(extra_args, pointcloud_points=pointcloud_points)
+    if rl_variant == RL_VARIANT_TD3:
+        raise ValueError("TD3 checkpoints are Stage 1-only and are not compatible with Stage 2 eval")
+    variant_args = with_rl_variant_overrides(extra_args, rl_variant=rl_variant)
+    pointcloud_args = with_pointcloud_overrides(variant_args, pointcloud_points=pointcloud_points)
     tactile_args = with_tactile_overrides(pointcloud_args, tactile=tactile)
     eval_pointcloud_points = int(_override_value(pointcloud_args, "task.env.hora.nPointCloudPts") or pointcloud_points)
     remote_fn = get_eval_sweep_remote_function(runtime_profile)
@@ -1446,6 +1506,7 @@ def main(
     runtime_profile: str = DEFAULT_RUNTIME_PROFILE,
     tactile: bool = False,
     pointcloud_points: int = 1024,
+    rl_variant: str = RL_VARIANT_PPO,
     auto_eval: bool = False,
     auto_eval_num_seeds: int = DEFAULT_AUTO_EVAL_NUM_SEEDS,
 ):
@@ -1460,6 +1521,7 @@ def main(
         runtime_profile: Modal runtime profile. One of t4_stable, a100_probe, a100_compat, h100_stable, h100_probe, h100_compat.
         tactile: When true, append tactile actor observations to Stage 1/2/3 and tactile history to Stage 2/3.
         pointcloud_points: Point cloud resolution for shape encoding. Must be 100, 200, 300, 500, or 1024.
+        rl_variant: Stage 1 RL variant. One of ppo, ppo_recurrent, ppo_asym_critic, ppo_tuned, td3.
         auto_eval: Run a Stage 2 BTG1-BTG13 mean-object eval sweep after Stage 2 completes.
         auto_eval_num_seeds: Number of eval seeds per BTG object for --auto-eval.
     """
@@ -1471,6 +1533,7 @@ def main(
         runtime_profile=runtime_profile,
         tactile=tactile,
         pointcloud_points=pointcloud_points,
+        rl_variant=rl_variant,
         auto_eval=auto_eval,
         auto_eval_num_seeds=auto_eval_num_seeds,
     )

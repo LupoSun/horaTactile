@@ -24,6 +24,7 @@ from hydra.utils import to_absolute_path
 from hora.tasks import isaacgym_task_map
 from hora.algo.ppo.ppo import PPO
 from hora.algo.padapt.padapt import ProprioAdapt
+from hora.algo.td3.td3 import TD3
 from hora.utils.reformat import omegaconf_to_dict, print_dict
 from hora.utils.checkpoint_utils import get_configured_best_checkpoint_relpath
 from hora.utils.misc import set_np_formatting, set_seed, write_run_metadata

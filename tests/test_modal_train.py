@@ -112,6 +112,45 @@ def test_with_pointcloud_overrides_selects_supported_resolution():
         modal_train.with_pointcloud_overrides((), pointcloud_points=512)
 
 
+def test_with_rl_variant_overrides_selects_supported_presets():
+    assert modal_train.with_rl_variant_overrides(("train.ppo.max_agent_steps=1024",)) == (
+        "train.ppo.max_agent_steps=1024",
+    )
+    assert modal_train.with_rl_variant_overrides((), rl_variant=modal_train.RL_VARIANT_PPO_RECURRENT) == (
+        "train.ppo.recurrent_obs=True",
+        "train.ppo.recurrent_obs_seq_len=3",
+        "train.ppo.recurrent_hidden_size=128",
+    )
+    assert modal_train.with_rl_variant_overrides((), rl_variant=modal_train.RL_VARIANT_PPO_ASYM_CRITIC) == (
+        "train.ppo.asymmetric_critic=True",
+        "train.ppo.actor_use_privileged_info=False",
+    )
+    assert modal_train.with_rl_variant_overrides((), rl_variant=modal_train.RL_VARIANT_PPO_TUNED) == (
+        "train.ppo.kl_threshold=0.01",
+        "train.ppo.entropy_coef=0.001",
+        "train.ppo.horizon_length=16",
+        "train.ppo.minibatch_size=32768",
+        "train.ppo.mini_epochs=4",
+    )
+    assert modal_train.with_rl_variant_overrides((), rl_variant=modal_train.RL_VARIANT_TD3) == (
+        "train.algo=TD3",
+        "train.ppo.td3_batch_size=32768",
+        "train.ppo.td3_learning_starts=80000",
+        "train.ppo.td3_replay_size=100000",
+    )
+    assert modal_train.with_rl_variant_overrides(
+        ("train.ppo.entropy_coef=0.01",),
+        rl_variant=modal_train.RL_VARIANT_PPO_TUNED,
+    )[1:] == (
+        "train.ppo.kl_threshold=0.01",
+        "train.ppo.horizon_length=16",
+        "train.ppo.minibatch_size=32768",
+        "train.ppo.mini_epochs=4",
+    )
+    with pytest.raises(ValueError):
+        modal_train.with_rl_variant_overrides((), rl_variant="sac")
+
+
 def test_build_auto_eval_manifest_targets_btg_mean_stage2():
     tactile_args = (
         "task.env.hora.useTactileObs=True",
@@ -460,6 +499,52 @@ def test_run_requested_stages_uses_selected_h100_profile(monkeypatch):
         ("h100-stable-stage1", "demo", 4, ("train.ppo.max_agent_steps=1024", *DEFAULT_POINTCLOUD_ARGS)),
         ("h100-stable-stage2", "demo", 4, ("train.ppo.max_agent_steps=1024", *DEFAULT_POINTCLOUD_ARGS)),
     ]
+
+
+def test_run_requested_stages_applies_rl_variant_to_stage1_and_stage2(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        modal_train,
+        "train_stage1_h100_stable_remote",
+        SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("stage1", run_name, seed, extra_args))),
+    )
+    monkeypatch.setattr(
+        modal_train,
+        "train_stage2_h100_stable_remote",
+        SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("stage2", run_name, seed, extra_args))),
+    )
+    monkeypatch.setattr(
+        modal_train,
+        "train_stage3_h100_stable_remote",
+        SimpleNamespace(remote=lambda run_name, seed, extra_args: calls.append(("stage3", run_name, seed, extra_args))),
+    )
+
+    modal_train.run_requested_stages(
+        "demo",
+        seed=6,
+        stage="both",
+        runtime_profile=modal_train.H100_STABLE_PROFILE,
+        rl_variant=modal_train.RL_VARIANT_PPO_RECURRENT,
+    )
+
+    variant_args = (
+        "train.ppo.recurrent_obs=True",
+        "train.ppo.recurrent_obs_seq_len=3",
+        "train.ppo.recurrent_hidden_size=128",
+    )
+    assert calls == [
+        ("stage1", "demo", 6, (*variant_args, *DEFAULT_POINTCLOUD_ARGS)),
+        ("stage2", "demo", 6, (*variant_args, *DEFAULT_POINTCLOUD_ARGS)),
+    ]
+
+
+def test_run_requested_stages_rejects_td3_after_stage1():
+    with pytest.raises(ValueError, match="Stage 1-only"):
+        modal_train.run_requested_stages(
+            "demo",
+            stage="both",
+            rl_variant=modal_train.RL_VARIANT_TD3,
+        )
 
 
 def test_run_requested_stages_applies_tactile_to_stage1_and_stage2(monkeypatch):

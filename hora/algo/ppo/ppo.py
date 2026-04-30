@@ -55,6 +55,11 @@ class PPO(object):
             'use_shape_priv_info': self.use_shape_priv_info,
             'shape_embed_dim': self.ppo_config.get('shape_embed_dim', 32),
             'pointnet_units': self.ppo_config.get('pointnet_units', [32, 32, 32]),
+            'asymmetric_critic': self.ppo_config.get('asymmetric_critic', False),
+            'actor_use_privileged_info': self.ppo_config.get('actor_use_privileged_info', True),
+            'recurrent_obs': self.ppo_config.get('recurrent_obs', False),
+            'recurrent_obs_seq_len': self.ppo_config.get('recurrent_obs_seq_len', 3),
+            'recurrent_hidden_size': self.ppo_config.get('recurrent_hidden_size', 128),
         }
         self.model = ActorCritic(net_config)
         self.model.to(self.device)
