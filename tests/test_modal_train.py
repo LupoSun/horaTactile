@@ -70,12 +70,16 @@ def test_with_tactile_overrides_appends_tactile_once():
     )
     assert modal_train.with_tactile_overrides(("train.ppo.max_agent_steps=1024",), tactile=True) == (
         "train.ppo.max_agent_steps=1024",
-        "task.env.hora.useTactileObs=False",
+        "task.env.hora.useTactileObs=True",
         "task.env.hora.useTactileHist=True",
     )
     assert modal_train.with_tactile_overrides(("task.env.hora.useTactileObs=False",), tactile=True) == (
         "task.env.hora.useTactileObs=False",
         "task.env.hora.useTactileHist=True",
+    )
+    assert modal_train.with_tactile_overrides((), tactile=True, tactile_hist=False) == (
+        "task.env.hora.useTactileObs=True",
+        "task.env.hora.useTactileHist=False",
     )
 
 
@@ -110,7 +114,7 @@ def test_with_pointcloud_overrides_selects_supported_resolution():
 
 def test_build_auto_eval_manifest_targets_btg_mean_stage2():
     tactile_args = (
-        "task.env.hora.useTactileObs=False",
+        "task.env.hora.useTactileObs=True",
         "task.env.hora.useTactileHist=True",
     )
     manifest = modal_train.build_auto_eval_manifest(
@@ -129,7 +133,7 @@ def test_build_auto_eval_manifest_targets_btg_mean_stage2():
     }
     assert manifest["objects"][-1]["object_type"] == "custom_btg13_mean"
     assert manifest["models"][0]["checkpoint"] == "outputs/AllegroHandHora/demo/stage2_nn/model_best.ckpt"
-    assert manifest["models"][0]["use_tactile_obs"] is False
+    assert manifest["models"][0]["use_tactile_obs"] is True
     assert manifest["models"][0]["use_tactile_hist"] is True
     assert manifest["models"][0]["use_shape_priv_info"] is True
     assert manifest["models"][0]["env_use_shape_priv_info"] is False
@@ -358,7 +362,7 @@ def test_build_stage_commands_include_journal_defaults():
 
 def test_build_stage2_command_can_enable_tactile():
     stage2_cmd = modal_train.build_stage2_command("demo", tactile=True)
-    assert "task.env.hora.useTactileObs=False" in stage2_cmd
+    assert "task.env.hora.useTactileObs=True" in stage2_cmd
     assert "task.env.hora.useTactileHist=True" in stage2_cmd
 
 
@@ -458,7 +462,7 @@ def test_run_requested_stages_uses_selected_h100_profile(monkeypatch):
     ]
 
 
-def test_run_requested_stages_applies_tactile_to_stage2(monkeypatch):
+def test_run_requested_stages_applies_tactile_to_stage1_and_stage2(monkeypatch):
     calls = []
     monkeypatch.setattr(
         modal_train,
@@ -486,7 +490,17 @@ def test_run_requested_stages_applies_tactile_to_stage2(monkeypatch):
     )
 
     assert calls == [
-        ("stage1", "demo", 6, ("train.ppo.max_agent_steps=1024", *DEFAULT_POINTCLOUD_ARGS)),
+        (
+            "stage1",
+            "demo",
+            6,
+            (
+                "train.ppo.max_agent_steps=1024",
+                *DEFAULT_POINTCLOUD_ARGS,
+                "task.env.hora.useTactileObs=True",
+                "task.env.hora.useTactileHist=False",
+            ),
+        ),
         (
             "stage2",
             "demo",
@@ -494,7 +508,7 @@ def test_run_requested_stages_applies_tactile_to_stage2(monkeypatch):
             (
                 "train.ppo.max_agent_steps=1024",
                 *DEFAULT_POINTCLOUD_ARGS,
-                "task.env.hora.useTactileObs=False",
+                "task.env.hora.useTactileObs=True",
                 "task.env.hora.useTactileHist=True",
             ),
         ),
@@ -544,7 +558,12 @@ def test_run_requested_stages_can_auto_eval_after_stage2(monkeypatch):
             "stage1",
             "demo",
             6,
-            ("task.env.hora.nPointCloudPts=100", "train.ppo.n_pointcloud_pts=100"),
+            (
+                "task.env.hora.nPointCloudPts=100",
+                "train.ppo.n_pointcloud_pts=100",
+                "task.env.hora.useTactileObs=True",
+                "task.env.hora.useTactileHist=False",
+            ),
         ),
         (
             "stage2",
@@ -553,7 +572,7 @@ def test_run_requested_stages_can_auto_eval_after_stage2(monkeypatch):
             (
                 "task.env.hora.nPointCloudPts=100",
                 "train.ppo.n_pointcloud_pts=100",
-                "task.env.hora.useTactileObs=False",
+                "task.env.hora.useTactileObs=True",
                 "task.env.hora.useTactileHist=True",
             ),
         ),
@@ -568,7 +587,7 @@ def test_run_requested_stages_can_auto_eval_after_stage2(monkeypatch):
             (
                 "task.env.hora.nPointCloudPts=100",
                 "train.ppo.n_pointcloud_pts=100",
-                "task.env.hora.useTactileObs=False",
+                "task.env.hora.useTactileObs=True",
                 "task.env.hora.useTactileHist=True",
             ),
             100,

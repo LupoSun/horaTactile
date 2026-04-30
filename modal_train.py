@@ -330,14 +330,18 @@ def parse_overrides(overrides: str) -> tuple[str, ...]:
     return tuple(shlex.split(stripped))
 
 
-def with_tactile_overrides(extra_args: tuple[str, ...], tactile: bool = False) -> tuple[str, ...]:
+def with_tactile_overrides(
+    extra_args: tuple[str, ...],
+    tactile: bool = False,
+    tactile_hist: bool = True,
+) -> tuple[str, ...]:
     if not tactile:
         return extra_args
     overrides = list(extra_args)
     if not any(arg.startswith("task.env.hora.useTactileObs=") for arg in overrides):
-        overrides.append("task.env.hora.useTactileObs=False")
+        overrides.append("task.env.hora.useTactileObs=True")
     if not any(arg.startswith("task.env.hora.useTactileHist=") for arg in overrides):
-        overrides.append("task.env.hora.useTactileHist=True")
+        overrides.append(f"task.env.hora.useTactileHist={'True' if tactile_hist else 'False'}")
     return tuple(overrides)
 
 
@@ -850,16 +854,17 @@ def run_requested_stages(
     profile = get_runtime_profile(runtime_profile)
     stage1_remote, stage2_remote, stage3_remote = get_stage_remote_functions(profile.name)
     pointcloud_args = with_pointcloud_overrides(extra_args, pointcloud_points=pointcloud_points)
+    stage1_args = with_tactile_overrides(pointcloud_args, tactile=tactile, tactile_hist=False)
+    stage2_args = with_tactile_overrides(pointcloud_args, tactile=tactile, tactile_hist=True)
     eval_pointcloud_points = int(_override_value(pointcloud_args, "task.env.hora.nPointCloudPts") or pointcloud_points)
 
     if stage in ("1", "both", "all"):
         print(f"[hora] Starting stage 1 training: {run_name} [{profile.name}]")
-        stage1_remote.remote(run_name, seed, pointcloud_args)
+        stage1_remote.remote(run_name, seed, stage1_args)
 
     if stage in ("2", "both", "all"):
         print(f"[hora] Starting stage 2 training: {run_name} [{profile.name}]")
-        tactile_args = with_tactile_overrides(pointcloud_args, tactile=tactile)
-        stage2_remote.remote(run_name, seed, tactile_args)
+        stage2_remote.remote(run_name, seed, stage2_args)
 
         if auto_eval:
             output_dir = get_auto_eval_output_dir(run_name)
@@ -872,14 +877,14 @@ def run_requested_stages(
                 get_auto_eval_wandb_name(run_name),
                 "eval",
                 run_name,
-                tactile_args,
+                stage2_args,
                 eval_pointcloud_points,
                 auto_eval_num_seeds,
             )
 
     if stage in ("3", "all"):
         print(f"[hora] Starting stage 3 BTG13 fine-tuning: {run_name} [{profile.name}]")
-        stage3_remote.remote(run_name, seed, with_tactile_overrides(pointcloud_args, tactile=tactile))
+        stage3_remote.remote(run_name, seed, stage2_args)
 
     print(f"[hora] Done. Outputs on volume at /vol/outputs/{get_output_name(run_name)}/")
 
@@ -1409,8 +1414,8 @@ def stage2_eval(
         run_name: Existing training run name with a Stage 2 checkpoint.
         overrides: Extra Hydra overrides used to infer tactile/point-cloud eval settings.
         runtime_profile: Modal runtime profile.
-        tactile: When true, append Stage 2 tactile-history defaults before eval.
-        pointcloud_points: Point cloud resolution for shape encoding. Must be 100 or 1024.
+        tactile: When true, append Stage 2 direct tactile actor observations and tactile history before eval.
+        pointcloud_points: Point cloud resolution for shape encoding. Must be 100, 200, 300, 500, or 1024.
         num_seeds: Number of eval seeds per BTG object.
         dry_run: Prepare cases without running Isaac Gym evals.
     """
@@ -1453,8 +1458,8 @@ def main(
         stage: Which stage to train — "1", "2", "3", "both", or "all" (default: "both").
         overrides: Extra Hydra overrides passed to train.py.
         runtime_profile: Modal runtime profile. One of t4_stable, a100_probe, a100_compat, h100_stable, h100_probe, h100_compat.
-        tactile: When true, append the split tactile obs/history flags to stages 2 and 3.
-        pointcloud_points: Point cloud resolution for shape encoding. Must be 100 or 1024.
+        tactile: When true, append tactile actor observations to Stage 1/2/3 and tactile history to Stage 2/3.
+        pointcloud_points: Point cloud resolution for shape encoding. Must be 100, 200, 300, 500, or 1024.
         auto_eval: Run a Stage 2 BTG1-BTG13 mean-object eval sweep after Stage 2 completes.
         auto_eval_num_seeds: Number of eval seeds per BTG object for --auto-eval.
     """
