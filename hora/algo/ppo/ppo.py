@@ -60,6 +60,7 @@ class PPO(object):
             'recurrent_obs': self.ppo_config.get('recurrent_obs', False),
             'recurrent_obs_seq_len': self.ppo_config.get('recurrent_obs_seq_len', 3),
             'recurrent_hidden_size': self.ppo_config.get('recurrent_hidden_size', 128),
+            'contact_reset_recurrent': self.ppo_config.get('contact_reset_recurrent', False),
             'contact_event_gating': self.ppo_config.get('contact_event_gating', False),
             'contact_num_modes': self.ppo_config.get('contact_num_modes', 4),
             'contact_gate_hidden_size': self.ppo_config.get('contact_gate_hidden_size', 32),

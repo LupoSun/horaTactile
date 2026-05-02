@@ -70,25 +70,73 @@ class PointNetEncoder(nn.Module):
 
 
 class ObservationEncoder(nn.Module):
-    def __init__(self, input_size, recurrent=False, seq_len=3, hidden_size=128):
+    def __init__(
+        self,
+        input_size,
+        recurrent=False,
+        seq_len=3,
+        hidden_size=128,
+        contact_reset_recurrent=False,
+        contact_tactile_dim=12,
+        contact_gate_hidden_size=32,
+    ):
         super(ObservationEncoder, self).__init__()
         self.input_size = input_size
         self.recurrent = recurrent
         self.seq_len = seq_len
         self.hidden_size = hidden_size
+        self.contact_reset_recurrent = contact_reset_recurrent
+        self.contact_tactile_dim = contact_tactile_dim
         if recurrent:
-            if input_size % seq_len != 0:
-                raise ValueError(f"Cannot split observation dim {input_size} into {seq_len} recurrent frames")
-            self.frame_dim = input_size // seq_len
-            self.gru = nn.GRU(self.frame_dim, hidden_size, batch_first=True)
+            if contact_reset_recurrent:
+                tactile_history_dim = seq_len * contact_tactile_dim
+                proprio_history_dim = input_size - tactile_history_dim
+                if proprio_history_dim <= 0 or proprio_history_dim % seq_len != 0:
+                    raise ValueError(
+                        f"Contact-reset recurrence needs obs dim {input_size} to contain "
+                        f"{seq_len} tactile frames of dim {contact_tactile_dim}"
+                    )
+                self.proprio_frame_dim = proprio_history_dim // seq_len
+                self.frame_dim = self.proprio_frame_dim + contact_tactile_dim
+                self.gru_cell = nn.GRUCell(self.frame_dim, hidden_size)
+                self.reset_gate = nn.Sequential(
+                    nn.Linear(contact_tactile_dim * 2, contact_gate_hidden_size),
+                    nn.ReLU(inplace=True),
+                    nn.Linear(contact_gate_hidden_size, 1),
+                    nn.Sigmoid(),
+                )
+            else:
+                if input_size % seq_len != 0:
+                    raise ValueError(f"Cannot split observation dim {input_size} into {seq_len} recurrent frames")
+                self.frame_dim = input_size // seq_len
+                self.gru = nn.GRU(self.frame_dim, hidden_size, batch_first=True)
             self.output_size = hidden_size
         else:
             self.frame_dim = input_size
             self.output_size = input_size
 
+    def _contact_reset_frames(self, obs):
+        proprio_end = self.seq_len * self.proprio_frame_dim
+        proprio = obs[:, :proprio_end].view(obs.shape[0], self.seq_len, self.proprio_frame_dim)
+        tactile = obs[:, proprio_end:].view(obs.shape[0], self.seq_len, self.contact_tactile_dim)
+        return torch.cat([proprio, tactile], dim=-1), tactile
+
     def forward(self, obs):
         if not self.recurrent:
             return obs
+        if self.contact_reset_recurrent:
+            obs_seq, tactile_seq = self._contact_reset_frames(obs)
+            hidden = obs.new_zeros((obs.shape[0], self.hidden_size))
+            prev_tactile = tactile_seq[:, 0]
+            for idx in range(self.seq_len):
+                if idx > 0:
+                    current_tactile = tactile_seq[:, idx]
+                    event = (current_tactile - prev_tactile).abs()
+                    reset = self.reset_gate(torch.cat([current_tactile.abs(), event], dim=-1))
+                    hidden = hidden * (1.0 - reset)
+                    prev_tactile = current_tactile
+                hidden = self.gru_cell(obs_seq[:, idx], hidden)
+            return hidden
         obs_seq = obs.view(obs.shape[0], self.seq_len, self.frame_dim)
         _, hidden = self.gru(obs_seq)
         return hidden[-1]
@@ -143,6 +191,7 @@ class ActorCritic(nn.Module):
         self.recurrent_obs = kwargs.get('recurrent_obs', False)
         self.recurrent_obs_seq_len = kwargs.get('recurrent_obs_seq_len', 3)
         self.recurrent_hidden_size = kwargs.get('recurrent_hidden_size', 128)
+        self.contact_reset_recurrent = kwargs.get('contact_reset_recurrent', False)
         self.contact_event_gating = kwargs.get('contact_event_gating', False)
         self.contact_tactile_dim = kwargs.get('contact_tactile_dim', 12)
         self.contact_history_len = kwargs.get('contact_history_len', self.recurrent_obs_seq_len)
@@ -153,6 +202,9 @@ class ActorCritic(nn.Module):
             recurrent=self.recurrent_obs,
             seq_len=self.recurrent_obs_seq_len,
             hidden_size=self.recurrent_hidden_size,
+            contact_reset_recurrent=self.contact_reset_recurrent,
+            contact_tactile_dim=self.contact_tactile_dim,
+            contact_gate_hidden_size=self.contact_gate_hidden_size,
         )
         self.has_separate_critic = self.asymmetric_critic or not self.actor_use_privileged_info
         self.critic_obs_encoder = None
@@ -162,6 +214,9 @@ class ActorCritic(nn.Module):
                 recurrent=self.recurrent_obs,
                 seq_len=self.recurrent_obs_seq_len,
                 hidden_size=self.recurrent_hidden_size,
+                contact_reset_recurrent=self.contact_reset_recurrent,
+                contact_tactile_dim=self.contact_tactile_dim,
+                contact_gate_hidden_size=self.contact_gate_hidden_size,
             )
         actor_input_shape = self.actor_obs_encoder.output_size
         critic_input_shape = (

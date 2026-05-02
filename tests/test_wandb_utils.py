@@ -377,6 +377,41 @@ def test_actor_critic_supports_contact_event_gated_actor():
     assert extrin_gt is None
 
 
+def test_actor_critic_supports_contact_reset_recurrent_encoder():
+    model = padapt_module.ActorCritic(
+        {
+            "actor_units": [8, 4],
+            "priv_mlp_units": [4, 8],
+            "actions_num": 2,
+            "input_shape": (132,),
+            "priv_info": True,
+            "proprio_adapt": False,
+            "priv_info_dim": 9,
+            "recurrent_obs": True,
+            "recurrent_obs_seq_len": 3,
+            "recurrent_hidden_size": 6,
+            "contact_reset_recurrent": True,
+            "contact_tactile_dim": 12,
+            "contact_gate_hidden_size": 8,
+        }
+    )
+
+    mu, logstd, value, extrin, extrin_gt = model._actor_critic(
+        {
+            "obs": torch.randn(2, 132),
+            "priv_info": torch.randn(2, 9),
+        }
+    )
+
+    assert model.actor_obs_encoder.proprio_frame_dim == 32
+    assert model.actor_obs_encoder.frame_dim == 44
+    assert mu.shape == (2, 2)
+    assert logstd.shape == (2, 2)
+    assert value.shape == (2, 1)
+    assert extrin.shape == (2, 8)
+    assert extrin_gt is None
+
+
 def test_proprio_adapt_predicts_shape_aware_extrinsics():
     model = padapt_module.ActorCritic(
         {
