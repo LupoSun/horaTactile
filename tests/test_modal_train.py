@@ -155,6 +155,8 @@ def test_build_auto_eval_manifest_targets_btg_mean_stage2():
     tactile_args = (
         "task.env.hora.useTactileObs=True",
         "task.env.hora.useTactileHist=True",
+        "train.ppo.asymmetric_critic=True",
+        "train.ppo.actor_use_privileged_info=False",
     )
     manifest = modal_train.build_auto_eval_manifest(
         "demo",
@@ -177,11 +179,37 @@ def test_build_auto_eval_manifest_targets_btg_mean_stage2():
     assert manifest["models"][0]["use_shape_priv_info"] is True
     assert manifest["models"][0]["env_use_shape_priv_info"] is False
     assert manifest["models"][0]["extra_overrides"] == [
+        "train.ppo.asymmetric_critic=True",
+        "train.ppo.actor_use_privileged_info=False",
         "task.env.hora.nPointCloudPts=100",
         "train.ppo.n_pointcloud_pts=100",
     ]
     with pytest.raises(ValueError):
         modal_train.build_auto_eval_manifest("demo", num_seeds=0)
+
+
+def test_build_auto_eval_manifest_preserves_recurrent_variant_overrides():
+    manifest = modal_train.build_auto_eval_manifest(
+        "demo",
+        tactile_args=(
+            "task.env.hora.useTactileObs=True",
+            "task.env.hora.useTactileHist=True",
+            "train.ppo.recurrent_obs=True",
+            "train.ppo.recurrent_obs_seq_len=3",
+            "train.ppo.recurrent_hidden_size=128",
+            "task.env.hora.nPointCloudPts=500",
+            "train.ppo.n_pointcloud_pts=500",
+        ),
+        pointcloud_points=500,
+    )
+
+    assert manifest["models"][0]["extra_overrides"] == [
+        "train.ppo.recurrent_obs=True",
+        "train.ppo.recurrent_obs_seq_len=3",
+        "train.ppo.recurrent_hidden_size=128",
+        "task.env.hora.nPointCloudPts=500",
+        "train.ppo.n_pointcloud_pts=500",
+    ]
 
 
 def test_eval_pointcloud_preflight_ignores_builtin_ball(monkeypatch, tmp_path):

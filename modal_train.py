@@ -429,6 +429,22 @@ def _pointcloud_eval_overrides(pointcloud_points: int) -> list[str]:
     ]
 
 
+def _auto_eval_extra_overrides(eval_args: tuple[str, ...], pointcloud_points: int) -> list[str]:
+    derived_keys = {
+        "task.env.hora.useTactileObs",
+        "task.env.hora.useTactileHist",
+        "task.env.hora.nPointCloudPts",
+        "train.ppo.n_pointcloud_pts",
+    }
+    overrides = [
+        arg
+        for arg in eval_args
+        if "=" not in arg or arg.split("=", 1)[0] not in derived_keys
+    ]
+    overrides.extend(_pointcloud_eval_overrides(pointcloud_points))
+    return overrides
+
+
 def build_auto_eval_manifest(
     run_name: str,
     tactile_args: tuple[str, ...] = (),
@@ -464,7 +480,7 @@ def build_auto_eval_manifest(
                 "priv_info": True,
                 "proprio_adapt": True,
                 "output_name": get_output_name(run_name),
-                "extra_overrides": _pointcloud_eval_overrides(pointcloud_points),
+                "extra_overrides": _auto_eval_extra_overrides(tactile_args, pointcloud_points),
             }
         ],
         "objects": [

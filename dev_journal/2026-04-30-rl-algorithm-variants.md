@@ -85,9 +85,16 @@ modal run --detach modal_train.py::main \
 --tactile \
 --rl-variant ppo_recurrent \
 --pointcloud-points 200 \
---overrides "train.ppo.max_agent_steps=200000000" \
---auto-eval \
---auto-eval-num-seeds 1
+--overrides "train.ppo.max_agent_steps=200000000"
+
+modal run --detach modal_train.py::stage2_eval \
+--run-name mixed_pointnet_tactile_ppo_recurrent \
+--runtime-profile a100_compat \
+--tactile \
+--rl-variant ppo_recurrent \
+--pointcloud-points 200 \
+--num-seeds 3
+
 ```
 
 Asymmetric PPO
@@ -108,9 +115,15 @@ modal run --detach modal_train.py::main \
 --tactile \
 --rl-variant ppo_asym_critic \
 --pointcloud-points 200 \
---overrides "train.ppo.max_agent_steps=200000000" \
---auto-eval \
---auto-eval-num-seeds 1
+--overrides "train.ppo.max_agent_steps=200000000"
+
+modal run --detach modal_train.py::stage2_eval \
+--run-name mixed_pointnet_tactile_ppo_asym \
+--runtime-profile a100_compat \
+--tactile \
+--rl-variant ppo_asym_critic \
+--pointcloud-points 200 \
+--num-seeds 3
 ```
 
 Tuned PPO
@@ -131,9 +144,15 @@ modal run --detach modal_train.py::main \
 --tactile \
 --rl-variant ppo_tuned \
 --pointcloud-points 200 \
---overrides "train.ppo.max_agent_steps=200000000" \
---auto-eval \
---auto-eval-num-seeds 1
+--overrides "train.ppo.max_agent_steps=200000000"
+
+modal run --detach modal_train.py::stage2_eval \
+--run-name mixed_pointnet_tactile_ppo_tuned \
+--runtime-profile a100_compat \
+--tactile \
+--rl-variant ppo_tuned \
+--pointcloud-points 200 \
+--num-seeds 3
 ```
 
 TD3
@@ -141,11 +160,9 @@ TD3
 modal run --detach modal_train.py::main \
 --run-name mixed_pointnet_tactile_td3 \
 --runtime-profile a100_compat \
---stage both \
+--stage 1 \
 --tactile \
 --rl-variant td3 \
 --pointcloud-points 200 \
---overrides "train.ppo.max_agent_steps=750000000" \
---auto-eval \
---auto-eval-num-seeds 1
+--overrides "train.ppo.max_agent_steps=750000000" 
 ```
