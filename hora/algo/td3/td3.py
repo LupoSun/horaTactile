@@ -141,6 +141,11 @@ class TD3(object):
             "recurrent_obs": self.ppo_config.get("recurrent_obs", False),
             "recurrent_obs_seq_len": self.ppo_config.get("recurrent_obs_seq_len", 3),
             "recurrent_hidden_size": self.ppo_config.get("recurrent_hidden_size", 128),
+            "contact_event_gating": self.ppo_config.get("contact_event_gating", False),
+            "contact_num_modes": self.ppo_config.get("contact_num_modes", 4),
+            "contact_gate_hidden_size": self.ppo_config.get("contact_gate_hidden_size", 32),
+            "contact_tactile_dim": self.ppo_config.get("contact_tactile_dim", 12),
+            "contact_history_len": self.ppo_config.get("contact_history_len", 3),
         }
         self.actor = ActorCritic(net_config).to(self.device)
         self.actor_target = ActorCritic(net_config).to(self.device)

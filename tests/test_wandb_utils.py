@@ -340,6 +340,43 @@ def test_actor_critic_supports_asymmetric_critic_only_privilege():
     assert extrin_gt is None
 
 
+def test_actor_critic_supports_contact_event_gated_actor():
+    model = padapt_module.ActorCritic(
+        {
+            "actor_units": [8, 4],
+            "priv_mlp_units": [4, 8],
+            "actions_num": 2,
+            "input_shape": (132,),
+            "priv_info": True,
+            "proprio_adapt": False,
+            "priv_info_dim": 9,
+            "contact_event_gating": True,
+            "contact_num_modes": 4,
+            "contact_gate_hidden_size": 8,
+            "contact_tactile_dim": 12,
+            "contact_history_len": 3,
+        }
+    )
+
+    obs = torch.randn(2, 132)
+    mu, logstd, value, extrin, extrin_gt = model._actor_critic(
+        {
+            "obs": obs,
+            "priv_info": torch.randn(2, 9),
+        }
+    )
+    gates = model.contact_gate(obs)
+
+    assert len(model.mu_experts) == 4
+    assert gates.shape == (2, 4)
+    assert torch.allclose(gates.sum(dim=-1), torch.ones(2))
+    assert mu.shape == (2, 2)
+    assert logstd.shape == (2, 2)
+    assert value.shape == (2, 1)
+    assert extrin.shape == (2, 8)
+    assert extrin_gt is None
+
+
 def test_proprio_adapt_predicts_shape_aware_extrinsics():
     model = padapt_module.ActorCritic(
         {

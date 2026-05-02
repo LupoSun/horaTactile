@@ -94,6 +94,35 @@ class ObservationEncoder(nn.Module):
         return hidden[-1]
 
 
+class ContactEventGate(nn.Module):
+    def __init__(self, obs_dim, history_len=3, tactile_dim=12, hidden_size=32, num_modes=4):
+        super(ContactEventGate, self).__init__()
+        self.history_len = history_len
+        self.tactile_dim = tactile_dim
+        self.num_modes = num_modes
+        self.enabled = obs_dim >= history_len * tactile_dim
+        input_size = tactile_dim * 3 if self.enabled else 1
+        self.gate = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_size, num_modes),
+        )
+
+    def _contact_features(self, obs):
+        if not self.enabled:
+            return obs.new_zeros((obs.shape[0], 1))
+        tactile = obs[:, -self.history_len * self.tactile_dim:]
+        tactile = tactile.view(obs.shape[0], self.history_len, self.tactile_dim)
+        current = tactile[:, -1].abs()
+        previous = tactile[:, -2].abs() if self.history_len > 1 else current
+        event = (current - previous).abs()
+        context = tactile.abs().mean(dim=1)
+        return torch.cat([current, event, context], dim=-1)
+
+    def forward(self, obs):
+        return torch.softmax(self.gate(self._contact_features(obs)), dim=-1)
+
+
 class ActorCritic(nn.Module):
     def __init__(self, kwargs):
         nn.Module.__init__(self)
@@ -114,6 +143,11 @@ class ActorCritic(nn.Module):
         self.recurrent_obs = kwargs.get('recurrent_obs', False)
         self.recurrent_obs_seq_len = kwargs.get('recurrent_obs_seq_len', 3)
         self.recurrent_hidden_size = kwargs.get('recurrent_hidden_size', 128)
+        self.contact_event_gating = kwargs.get('contact_event_gating', False)
+        self.contact_tactile_dim = kwargs.get('contact_tactile_dim', 12)
+        self.contact_history_len = kwargs.get('contact_history_len', self.recurrent_obs_seq_len)
+        self.contact_num_modes = kwargs.get('contact_num_modes', 4)
+        self.contact_gate_hidden_size = kwargs.get('contact_gate_hidden_size', 32)
         self.actor_obs_encoder = ObservationEncoder(
             obs_input_shape,
             recurrent=self.recurrent_obs,
@@ -153,7 +187,20 @@ class ActorCritic(nn.Module):
         if self.has_separate_critic:
             self.critic_mlp = MLP(units=self.units, input_size=critic_input_shape)
         self.value = torch.nn.Linear(out_size, 1)
-        self.mu = torch.nn.Linear(out_size, actions_num)
+        if self.contact_event_gating:
+            self.contact_gate = ContactEventGate(
+                obs_input_shape,
+                history_len=self.contact_history_len,
+                tactile_dim=self.contact_tactile_dim,
+                hidden_size=self.contact_gate_hidden_size,
+                num_modes=self.contact_num_modes,
+            )
+            self.mu_experts = nn.ModuleList(
+                [torch.nn.Linear(out_size, actions_num) for _ in range(self.contact_num_modes)]
+            )
+        else:
+            self.contact_gate = None
+            self.mu = torch.nn.Linear(out_size, actions_num)
         self.sigma = nn.Parameter(torch.zeros(actions_num, requires_grad=True, dtype=torch.float32), requires_grad=True)
 
         for m in self.modules():
@@ -190,6 +237,13 @@ class ActorCritic(nn.Module):
         mu, logstd, value, _, _ = self._actor_critic(obs_dict)
         return mu
 
+    def _actor_mu(self, actor_features, obs):
+        if not self.contact_event_gating:
+            return self.mu(actor_features)
+        gates = self.contact_gate(obs)
+        expert_mus = torch.stack([expert(actor_features) for expert in self.mu_experts], dim=1)
+        return torch.sum(expert_mus * gates.unsqueeze(-1), dim=1)
+
     def _actor_critic(self, obs_dict):
         obs = obs_dict['obs']
         actor_obs = self.actor_obs_encoder(obs)
@@ -214,7 +268,7 @@ class ActorCritic(nn.Module):
         actor_features = self.actor_mlp(actor_obs)
         critic_features = self.critic_mlp(critic_obs) if self.critic_mlp is not None else actor_features
         value = self.value(critic_features)
-        mu = self.mu(actor_features)
+        mu = self._actor_mu(actor_features, obs)
         sigma = self.sigma
         return mu, mu * 0 + sigma, value, extrin, extrin_gt
 
@@ -230,7 +284,7 @@ class ActorCritic(nn.Module):
         if self.actor_use_privileged_info:
             actor_obs = torch.cat([actor_obs, extrin], dim=-1)
         x = self.actor_mlp(actor_obs)
-        return self.mu(x)
+        return self._actor_mu(x, obs)
 
     def forward(self, input_dict):
         prev_actions = input_dict.get('prev_actions', None)
