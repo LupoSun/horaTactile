@@ -13,6 +13,7 @@
 import os
 import time
 import torch
+import torch.nn.functional as F
 
 from hora.algo.ppo.experience import ExperienceBuffer
 from hora.algo.models.models import ActorCritic
@@ -66,6 +67,7 @@ class PPO(object):
             'contact_gate_hidden_size': self.ppo_config.get('contact_gate_hidden_size', 32),
             'contact_tactile_dim': self.ppo_config.get('contact_tactile_dim', 12),
             'contact_history_len': self.ppo_config.get('contact_history_len', 3),
+            'contact_transition_aux_loss': self.ppo_config.get('contact_transition_aux_loss', False),
         }
         self.model = ActorCritic(net_config)
         self.model.to(self.device)
@@ -94,6 +96,11 @@ class PPO(object):
         self.normalize_advantage = self.ppo_config['normalize_advantage']
         self.normalize_input = self.ppo_config['normalize_input']
         self.normalize_value = self.ppo_config['normalize_value']
+        self.contact_transition_aux_loss = self.ppo_config.get('contact_transition_aux_loss', False)
+        self.contact_transition_aux_coef = self.ppo_config.get('contact_transition_aux_coef', 0.05)
+        self.contact_transition_aux_threshold = self.ppo_config.get('contact_transition_aux_threshold', 0.05)
+        self.contact_tactile_dim = self.ppo_config.get('contact_tactile_dim', 12)
+        self.contact_history_len = self.ppo_config.get('contact_history_len', 3)
         # ---- PPO Collect Param ----
         self.horizon_length = self.ppo_config['horizon_length']
         self.batch_size = self.horizon_length * self.num_actors
@@ -118,6 +125,7 @@ class PPO(object):
             self.num_actors, self.horizon_length, self.batch_size, self.minibatch_size, self.obs_shape[0],
             self.actions_num, self.priv_info_dim, self.device,
             point_cloud_shape=(self.ppo_config.get('n_pointcloud_pts', 100), 3) if self.use_shape_priv_info else None,
+            contact_transition_target_dim=self.contact_tactile_dim if self.contact_transition_aux_loss else None,
         )
 
         batch_size = self.num_actors
@@ -133,7 +141,7 @@ class PPO(object):
         self.rl_train_time = 0
         self.all_time = 0
 
-    def write_stats(self, a_losses, c_losses, b_losses, entropies, kls):
+    def write_stats(self, a_losses, c_losses, b_losses, entropies, kls, aux_losses=None):
         stats = {
             'performance/RLTrainFPS': self.agent_steps / self.rl_train_time,
             'performance/EnvStepFPS': self.agent_steps / self.data_collect_time,
@@ -145,6 +153,8 @@ class PPO(object):
             'info/e_clip': self.e_clip,
             'info/kl': torch.mean(torch.stack(kls)).item(),
         }
+        if aux_losses:
+            stats['losses/contact_transition_aux_loss'] = torch.mean(torch.stack(aux_losses)).item()
         for k, v in self.extra_info.items():
             stats[k] = v
         wandb.log(stats, step=self.agent_steps)
@@ -175,6 +185,19 @@ class PPO(object):
         res_dict['values'] = self.value_mean_std(res_dict['values'], True)
         return res_dict
 
+    def contact_transition_target(self, obs):
+        tactile_history_dim = self.contact_history_len * self.contact_tactile_dim
+        if obs.shape[-1] < tactile_history_dim:
+            return obs.new_zeros((obs.shape[0], self.contact_tactile_dim))
+        tactile = obs[:, -tactile_history_dim:].view(
+            obs.shape[0],
+            self.contact_history_len,
+            self.contact_tactile_dim,
+        )
+        current_contact = tactile[:, -1].abs() > self.contact_transition_aux_threshold
+        previous_contact = tactile[:, -2].abs() > self.contact_transition_aux_threshold
+        return torch.logical_xor(current_contact, previous_contact).float()
+
     def train(self):
         _t = time.time()
         _last_t = time.time()
@@ -183,7 +206,7 @@ class PPO(object):
 
         while self.agent_steps < self.max_agent_steps:
             self.epoch_num += 1
-            a_losses, c_losses, b_losses, entropies, kls = self.train_epoch()
+            a_losses, c_losses, b_losses, entropies, kls, aux_losses = self.train_epoch()
             self.storage.data_dict = None
 
             all_fps = self.agent_steps / (time.time() - _t)
@@ -196,7 +219,7 @@ class PPO(object):
                           f'Current Best: {self.best_rewards:.2f}'
             print(info_string)
 
-            self.write_stats(a_losses, c_losses, b_losses, entropies, kls)
+            self.write_stats(a_losses, c_losses, b_losses, entropies, kls, aux_losses)
 
             mean_rewards = self.episode_rewards.get_mean()
             mean_lengths = self.episode_lengths.get_mean()
@@ -263,7 +286,7 @@ class PPO(object):
         # update network
         _t = time.time()
         self.set_train()
-        a_losses, b_losses, c_losses = [], [], []
+        a_losses, b_losses, c_losses, aux_losses = [], [], [], []
         entropies, kls = [], []
         for _ in range(0, self.mini_epochs_num):
             ep_kls = []
@@ -271,7 +294,15 @@ class PPO(object):
                 batch = self.storage[i]
                 value_preds, old_action_log_probs, advantage, old_mu, old_sigma, \
                     returns, actions, obs, priv_info = batch[:9]
-                point_cloud = batch[9] if len(batch) > 9 else None
+                batch_idx = 9
+                point_cloud = batch[batch_idx] if self.use_shape_priv_info else None
+                if self.use_shape_priv_info:
+                    batch_idx += 1
+                contact_transition_target = (
+                    batch[batch_idx]
+                    if self.contact_transition_aux_loss and len(batch) > batch_idx
+                    else None
+                )
 
                 obs = self.running_mean_std(obs)
                 batch_dict = {
@@ -309,6 +340,13 @@ class PPO(object):
                 a_loss, c_loss, entropy, b_loss = [torch.mean(loss) for loss in [a_loss, c_loss, entropy, b_loss]]
 
                 loss = a_loss + 0.5 * c_loss * self.critic_coef - entropy * self.entropy_coef + b_loss * self.bounds_loss_coef
+                if self.contact_transition_aux_loss and contact_transition_target is not None:
+                    aux_loss = F.binary_cross_entropy_with_logits(
+                        res_dict['contact_transition_logits'],
+                        contact_transition_target,
+                    )
+                    loss = loss + self.contact_transition_aux_coef * aux_loss
+                    aux_losses.append(aux_loss)
 
                 self.optimizer.zero_grad()
                 loss.backward()
@@ -336,7 +374,7 @@ class PPO(object):
             kls.append(av_kls)
 
         self.rl_train_time += (time.time() - _t)
-        return a_losses, c_losses, b_losses, entropies, kls
+        return a_losses, c_losses, b_losses, entropies, kls, aux_losses
 
     def play_steps(self):
         for n in range(self.horizon_length):
@@ -352,6 +390,10 @@ class PPO(object):
             actions = torch.clamp(res_dict['actions'], -1.0, 1.0)
             self.obs, rewards, self.dones, infos = self.env.step(actions)
             rewards = rewards.unsqueeze(1)
+            if self.contact_transition_aux_loss:
+                contact_transition_target = self.contact_transition_target(self.obs['obs'])
+                contact_transition_target = contact_transition_target * (1.0 - self.dones.float()).unsqueeze(1)
+                self.storage.update_data('contact_transition_targets', n, contact_transition_target)
             # update dones and rewards after env step
             self.storage.update_data('dones', n, self.dones)
             shaped_rewards = 0.01 * rewards.clone()

@@ -37,6 +37,7 @@ class ExperienceBuffer(Dataset):
         priv_dim,
         device,
         point_cloud_shape=None,
+        contact_transition_target_dim=None,
     ):
         self.device = device
         self.num_envs = num_envs
@@ -62,6 +63,12 @@ class ExperienceBuffer(Dataset):
         if point_cloud_shape is not None:
             self.storage_dict['point_clouds'] = torch.zeros(
                 (self.transitions_per_env, self.num_envs, *point_cloud_shape),
+                dtype=torch.float32,
+                device=self.device,
+            )
+        if contact_transition_target_dim is not None:
+            self.storage_dict['contact_transition_targets'] = torch.zeros(
+                (self.transitions_per_env, self.num_envs, contact_transition_target_dim),
                 dtype=torch.float32,
                 device=self.device,
             )
@@ -91,6 +98,8 @@ class ExperienceBuffer(Dataset):
         ]
         if 'point_clouds' in input_dict:
             result.append(input_dict['point_clouds'])
+        if 'contact_transition_targets' in input_dict:
+            result.append(input_dict['contact_transition_targets'])
         return tuple(result)
 
     def update_mu_sigma(self, mu, sigma):

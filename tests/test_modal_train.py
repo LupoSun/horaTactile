@@ -147,6 +147,13 @@ def test_with_rl_variant_overrides_selects_supported_presets():
         "train.ppo.contact_tactile_dim=12",
         "train.ppo.contact_gate_hidden_size=32",
     )
+    assert modal_train.with_rl_variant_overrides((), rl_variant=modal_train.RL_VARIANT_PPO_CONTACT_AUX) == (
+        "train.ppo.contact_transition_aux_loss=True",
+        "train.ppo.contact_transition_aux_coef=0.05",
+        "train.ppo.contact_transition_aux_threshold=0.05",
+        "train.ppo.contact_tactile_dim=12",
+        "train.ppo.contact_history_len=3",
+    )
     assert modal_train.with_rl_variant_overrides((), rl_variant=modal_train.RL_VARIANT_TD3) == (
         "train.algo=TD3",
         "train.ppo.td3_batch_size=32768",

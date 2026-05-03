@@ -412,6 +412,35 @@ def test_actor_critic_supports_contact_reset_recurrent_encoder():
     assert extrin_gt is None
 
 
+def test_actor_critic_supports_contact_transition_auxiliary_head():
+    model = padapt_module.ActorCritic(
+        {
+            "actor_units": [8, 4],
+            "priv_mlp_units": [4, 8],
+            "actions_num": 2,
+            "input_shape": (132,),
+            "priv_info": True,
+            "proprio_adapt": False,
+            "priv_info_dim": 9,
+            "contact_transition_aux_loss": True,
+            "contact_tactile_dim": 12,
+            "contact_gate_hidden_size": 8,
+        }
+    )
+
+    result = model(
+        {
+            "obs": torch.randn(2, 132),
+            "priv_info": torch.randn(2, 9),
+            "prev_actions": torch.randn(2, 2),
+        }
+    )
+
+    assert result["mus"].shape == (2, 2)
+    assert result["values"].shape == (2, 1)
+    assert result["contact_transition_logits"].shape == (2, 12)
+
+
 def test_proprio_adapt_predicts_shape_aware_extrinsics():
     model = padapt_module.ActorCritic(
         {

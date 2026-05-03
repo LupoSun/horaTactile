@@ -197,6 +197,7 @@ class ActorCritic(nn.Module):
         self.contact_history_len = kwargs.get('contact_history_len', self.recurrent_obs_seq_len)
         self.contact_num_modes = kwargs.get('contact_num_modes', 4)
         self.contact_gate_hidden_size = kwargs.get('contact_gate_hidden_size', 32)
+        self.contact_transition_aux_loss = kwargs.get('contact_transition_aux_loss', False)
         self.actor_obs_encoder = ObservationEncoder(
             obs_input_shape,
             recurrent=self.recurrent_obs,
@@ -256,6 +257,12 @@ class ActorCritic(nn.Module):
         else:
             self.contact_gate = None
             self.mu = torch.nn.Linear(out_size, actions_num)
+        if self.contact_transition_aux_loss:
+            self.contact_transition_head = nn.Sequential(
+                torch.nn.Linear(out_size, self.contact_gate_hidden_size),
+                nn.ReLU(inplace=True),
+                torch.nn.Linear(self.contact_gate_hidden_size, self.contact_tactile_dim),
+            )
         self.sigma = nn.Parameter(torch.zeros(actions_num, requires_grad=True, dtype=torch.float32), requires_grad=True)
 
         for m in self.modules():
@@ -299,7 +306,7 @@ class ActorCritic(nn.Module):
         expert_mus = torch.stack([expert(actor_features) for expert in self.mu_experts], dim=1)
         return torch.sum(expert_mus * gates.unsqueeze(-1), dim=1)
 
-    def _actor_critic(self, obs_dict):
+    def _actor_critic(self, obs_dict, return_contact_transition=False):
         obs = obs_dict['obs']
         actor_obs = self.actor_obs_encoder(obs)
         critic_obs = actor_obs
@@ -325,6 +332,13 @@ class ActorCritic(nn.Module):
         value = self.value(critic_features)
         mu = self._actor_mu(actor_features, obs)
         sigma = self.sigma
+        contact_transition_logits = (
+            self.contact_transition_head(actor_features)
+            if self.contact_transition_aux_loss
+            else None
+        )
+        if return_contact_transition:
+            return mu, mu * 0 + sigma, value, extrin, extrin_gt, contact_transition_logits
         return mu, mu * 0 + sigma, value, extrin, extrin_gt
 
     def _encode_privileged(self, obs_dict):
@@ -343,8 +357,8 @@ class ActorCritic(nn.Module):
 
     def forward(self, input_dict):
         prev_actions = input_dict.get('prev_actions', None)
-        rst = self._actor_critic(input_dict)
-        mu, logstd, value, extrin, extrin_gt = rst
+        rst = self._actor_critic(input_dict, return_contact_transition=True)
+        mu, logstd, value, extrin, extrin_gt, contact_transition_logits = rst
         sigma = torch.exp(logstd)
         distr = torch.distributions.Normal(mu, sigma)
         entropy = distr.entropy().sum(dim=-1)
@@ -358,4 +372,6 @@ class ActorCritic(nn.Module):
             'extrin': extrin,
             'extrin_gt': extrin_gt,
         }
+        if contact_transition_logits is not None:
+            result['contact_transition_logits'] = contact_transition_logits
         return result

@@ -61,6 +61,7 @@ class ProprioAdapt(object):
             'contact_gate_hidden_size': self.ppo_config.get('contact_gate_hidden_size', 32),
             'contact_tactile_dim': self.ppo_config.get('contact_tactile_dim', 12),
             'contact_history_len': self.ppo_config.get('contact_history_len', 3),
+            'contact_transition_aux_loss': self.ppo_config.get('contact_transition_aux_loss', False),
         }
         self.model = ActorCritic(net_config)
         self.model.to(self.device)
