@@ -18,6 +18,7 @@ Usage:
 
     # Train stages 1/2, then automatically evaluate Stage 2 on BTG1-BTG13 mean objects
     modal run --detach modal_train.py::main --run-name my_exp --runtime-profile a100_compat --stage both --tactile --auto-eval
+    modal run --detach modal_train.py::main --run-name my_exp --runtime-profile a100_compat --stage both --tactile --auto-eval --stage1-overrides "train.ppo.max_agent_steps=1500000000" --stage2-overrides "train.ppo.max_agent_steps=200000000"
 
     # Select an explicit runtime profile
     modal run modal_train.py::main --run-name my_exp --runtime-profile h100_stable --stage 1
@@ -355,6 +356,20 @@ def parse_overrides(overrides: str) -> tuple[str, ...]:
     if not stripped:
         return ()
     return tuple(shlex.split(stripped))
+
+
+def _override_key(arg: str) -> str | None:
+    if "=" not in arg:
+        return None
+    return arg.split("=", 1)[0]
+
+
+def merge_overrides(base_args: tuple[str, ...], stage_args: tuple[str, ...]) -> tuple[str, ...]:
+    if not stage_args:
+        return base_args
+    stage_keys = {_override_key(arg) for arg in stage_args}
+    stage_keys.discard(None)
+    return tuple(arg for arg in base_args if _override_key(arg) not in stage_keys) + stage_args
 
 
 def with_tactile_overrides(
@@ -1022,11 +1037,49 @@ def get_eval_sweep_remote_function(runtime_profile: str = DEFAULT_RUNTIME_PROFIL
     return eval_sweep_h100_compat_remote
 
 
+def get_pipeline_remote_function(runtime_profile: str = DEFAULT_RUNTIME_PROFILE):
+    get_runtime_profile(runtime_profile)
+    if runtime_profile == T4_STABLE_PROFILE:
+        return train_pipeline_t4_stable_remote
+    if runtime_profile == A100_PROBE_PROFILE:
+        return train_pipeline_a100_probe_remote
+    if runtime_profile == A100_COMPAT_PROFILE:
+        return train_pipeline_a100_compat_remote
+    if runtime_profile == H100_STABLE_PROFILE:
+        return train_pipeline_h100_stable_remote
+    if runtime_profile == H100_PROBE_PROFILE:
+        return train_pipeline_h100_probe_remote
+    return train_pipeline_h100_compat_remote
+
+
+def build_stage_dispatch_args(
+    extra_args: tuple[str, ...] = (),
+    stage1_extra_args: tuple[str, ...] = (),
+    stage2_extra_args: tuple[str, ...] = (),
+    tactile: bool = False,
+    pointcloud_points: int = 1024,
+    rl_variant: str = RL_VARIANT_PPO,
+) -> tuple[tuple[str, ...], tuple[str, ...], int]:
+    stage1_base_args = merge_overrides(extra_args, stage1_extra_args)
+    stage2_base_args = merge_overrides(extra_args, stage2_extra_args)
+    stage1_variant_args = with_rl_variant_overrides(stage1_base_args, rl_variant=rl_variant)
+    stage2_variant = RL_VARIANT_PPO if rl_variant == RL_VARIANT_TD3 else rl_variant
+    stage2_variant_args = with_rl_variant_overrides(stage2_base_args, rl_variant=stage2_variant)
+    stage1_pointcloud_args = with_pointcloud_overrides(stage1_variant_args, pointcloud_points=pointcloud_points)
+    stage2_pointcloud_args = with_pointcloud_overrides(stage2_variant_args, pointcloud_points=pointcloud_points)
+    stage1_args = with_tactile_overrides(stage1_pointcloud_args, tactile=tactile, tactile_hist=False)
+    stage2_args = with_tactile_overrides(stage2_pointcloud_args, tactile=tactile, tactile_hist=True)
+    eval_pointcloud_points = int(_override_value(stage2_pointcloud_args, "task.env.hora.nPointCloudPts") or pointcloud_points)
+    return stage1_args, stage2_args, eval_pointcloud_points
+
+
 def run_requested_stages(
     run_name: str,
     seed: int = 0,
     stage: str = "both",
     extra_args: tuple[str, ...] = (),
+    stage1_extra_args: tuple[str, ...] = (),
+    stage2_extra_args: tuple[str, ...] = (),
     runtime_profile: str = DEFAULT_RUNTIME_PROFILE,
     tactile: bool = False,
     pointcloud_points: int = 1024,
@@ -1038,15 +1091,14 @@ def run_requested_stages(
         raise ValueError(f"Unsupported stage selection: {stage}")
     profile = get_runtime_profile(runtime_profile)
     stage1_remote, stage2_remote, stage3_remote = get_stage_remote_functions(profile.name)
-    stage1_variant_args = with_rl_variant_overrides(extra_args, rl_variant=rl_variant)
-    stage2_variant = RL_VARIANT_PPO if rl_variant == RL_VARIANT_TD3 else rl_variant
-    stage2_variant_args = with_rl_variant_overrides(extra_args, rl_variant=stage2_variant)
-    stage1_pointcloud_args = with_pointcloud_overrides(stage1_variant_args, pointcloud_points=pointcloud_points)
-    stage2_pointcloud_args = with_pointcloud_overrides(stage2_variant_args, pointcloud_points=pointcloud_points)
-    stage1_args = with_tactile_overrides(stage1_pointcloud_args, tactile=tactile, tactile_hist=False)
-    stage2_args = with_tactile_overrides(stage2_pointcloud_args, tactile=tactile, tactile_hist=True)
-    pointcloud_args = stage2_pointcloud_args
-    eval_pointcloud_points = int(_override_value(pointcloud_args, "task.env.hora.nPointCloudPts") or pointcloud_points)
+    stage1_args, stage2_args, eval_pointcloud_points = build_stage_dispatch_args(
+        extra_args=extra_args,
+        stage1_extra_args=stage1_extra_args,
+        stage2_extra_args=stage2_extra_args,
+        tactile=tactile,
+        pointcloud_points=pointcloud_points,
+        rl_variant=rl_variant,
+    )
 
     if stage in ("1", "both", "all"):
         print(f"[hora] Starting stage 1 training: {run_name} [{profile.name}]")
@@ -1077,6 +1129,123 @@ def run_requested_stages(
         stage3_remote.remote(run_name, seed, stage2_args)
 
     print(f"[hora] Done. Outputs on volume at /vol/outputs/{get_output_name(run_name)}/")
+
+
+def _run_stage_pipeline(
+    run_name: str,
+    seed: int = 0,
+    stage: str = "both",
+    extra_args: tuple[str, ...] = (),
+    stage1_extra_args: tuple[str, ...] = (),
+    stage2_extra_args: tuple[str, ...] = (),
+    runtime_profile: str = DEFAULT_RUNTIME_PROFILE,
+    tactile: bool = False,
+    pointcloud_points: int = 1024,
+    rl_variant: str = RL_VARIANT_PPO,
+    auto_eval: bool = False,
+    auto_eval_num_seeds: int = DEFAULT_AUTO_EVAL_NUM_SEEDS,
+):
+    if stage not in ("1", "2", "3", "both", "all"):
+        raise ValueError(f"Unsupported stage selection: {stage}")
+    profile = get_runtime_profile(runtime_profile)
+    stage1_args, stage2_args, eval_pointcloud_points = build_stage_dispatch_args(
+        extra_args=extra_args,
+        stage1_extra_args=stage1_extra_args,
+        stage2_extra_args=stage2_extra_args,
+        tactile=tactile,
+        pointcloud_points=pointcloud_points,
+        rl_variant=rl_variant,
+    )
+
+    if stage in ("1", "both", "all"):
+        print(f"[hora] Pipeline starting stage 1 training: {run_name} [{profile.name}]")
+        _run_stage(1, run_name, seed=seed, extra_args=stage1_args)
+
+    if stage in ("2", "both", "all"):
+        print(f"[hora] Pipeline starting stage 2 training: {run_name} [{profile.name}]")
+        _run_stage(2, run_name, seed=seed, extra_args=stage2_args)
+
+        if auto_eval:
+            print(f"[hora] Pipeline starting stage 2 BTG mean eval sweep: {run_name} [{profile.name}]")
+            _run_eval_sweep(
+                "",
+                output_dir=get_auto_eval_output_dir(run_name),
+                dry_run=False,
+                wandb_name=get_auto_eval_wandb_name(run_name),
+                wandb_group="eval",
+                auto_run_name=run_name,
+                tactile_args=stage2_args,
+                pointcloud_points=eval_pointcloud_points,
+                num_seeds=auto_eval_num_seeds,
+            )
+
+    if stage in ("3", "all"):
+        print(f"[hora] Pipeline starting stage 3 BTG13 fine-tuning: {run_name} [{profile.name}]")
+        _run_stage(3, run_name, seed=seed, extra_args=stage2_args)
+
+    print(f"[hora] Pipeline done. Outputs on volume at /vol/outputs/{get_output_name(run_name)}/")
+
+
+def _start_remote(remote_fn, *args):
+    if hasattr(remote_fn, "spawn"):
+        call = remote_fn.spawn(*args)
+        call_id = getattr(call, "object_id", None) or getattr(call, "function_call_id", None)
+        if call_id:
+            print(f"[hora] Spawned Modal call: {call_id}")
+        return call
+    return remote_fn.remote(*args)
+
+
+def run_requested_stages_durable(
+    run_name: str,
+    seed: int = 0,
+    stage: str = "both",
+    extra_args: tuple[str, ...] = (),
+    stage1_extra_args: tuple[str, ...] = (),
+    stage2_extra_args: tuple[str, ...] = (),
+    runtime_profile: str = DEFAULT_RUNTIME_PROFILE,
+    tactile: bool = False,
+    pointcloud_points: int = 1024,
+    rl_variant: str = RL_VARIANT_PPO,
+    auto_eval: bool = False,
+    auto_eval_num_seeds: int = DEFAULT_AUTO_EVAL_NUM_SEEDS,
+):
+    if stage not in ("1", "2", "3", "both", "all"):
+        raise ValueError(f"Unsupported stage selection: {stage}")
+    needs_pipeline = stage in ("both", "all") or (auto_eval and stage == "2")
+    if not needs_pipeline:
+        return run_requested_stages(
+            run_name,
+            seed=seed,
+            stage=stage,
+            extra_args=extra_args,
+            stage1_extra_args=stage1_extra_args,
+            stage2_extra_args=stage2_extra_args,
+            runtime_profile=runtime_profile,
+            tactile=tactile,
+            pointcloud_points=pointcloud_points,
+            rl_variant=rl_variant,
+            auto_eval=auto_eval,
+            auto_eval_num_seeds=auto_eval_num_seeds,
+        )
+
+    profile = get_runtime_profile(runtime_profile)
+    pipeline_remote = get_pipeline_remote_function(profile.name)
+    print(f"[hora] Starting durable cloud pipeline: {run_name} [{profile.name}] stage={stage} auto_eval={auto_eval}")
+    return _start_remote(
+        pipeline_remote,
+        run_name,
+        seed,
+        stage,
+        extra_args,
+        stage1_extra_args,
+        stage2_extra_args,
+        tactile,
+        pointcloud_points,
+        rl_variant,
+        auto_eval,
+        auto_eval_num_seeds,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1367,6 +1536,162 @@ def train_stage3_h100_compat_remote(run_name: str, seed: int = 0, extra_args: tu
     gpu=RUNTIME_PROFILES[T4_STABLE_PROFILE].gpu,
     function_env=RUNTIME_PROFILES[T4_STABLE_PROFILE].function_env,
 ))
+def train_pipeline_t4_stable_remote(
+    run_name: str,
+    seed: int = 0,
+    stage: str = "both",
+    extra_args: tuple[str, ...] = (),
+    stage1_extra_args: tuple[str, ...] = (),
+    stage2_extra_args: tuple[str, ...] = (),
+    tactile: bool = False,
+    pointcloud_points: int = 1024,
+    rl_variant: str = RL_VARIANT_PPO,
+    auto_eval: bool = False,
+    auto_eval_num_seeds: int = DEFAULT_AUTO_EVAL_NUM_SEEDS,
+):
+    """Durable cloud-side stage pipeline on T4."""
+    emit_runtime_diagnostics(T4_STABLE_PROFILE)
+    _run_stage_pipeline(run_name, seed, stage, extra_args, stage1_extra_args, stage2_extra_args, T4_STABLE_PROFILE, tactile, pointcloud_points, rl_variant, auto_eval, auto_eval_num_seeds)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[A100_PROBE_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[A100_PROBE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[A100_PROBE_PROFILE].function_env,
+))
+def train_pipeline_a100_probe_remote(
+    run_name: str,
+    seed: int = 0,
+    stage: str = "both",
+    extra_args: tuple[str, ...] = (),
+    stage1_extra_args: tuple[str, ...] = (),
+    stage2_extra_args: tuple[str, ...] = (),
+    tactile: bool = False,
+    pointcloud_points: int = 1024,
+    rl_variant: str = RL_VARIANT_PPO,
+    auto_eval: bool = False,
+    auto_eval_num_seeds: int = DEFAULT_AUTO_EVAL_NUM_SEEDS,
+):
+    """Durable cloud-side stage pipeline on A100 probe."""
+    emit_runtime_diagnostics(A100_PROBE_PROFILE)
+    _run_stage_pipeline(run_name, seed, stage, extra_args, stage1_extra_args, stage2_extra_args, A100_PROBE_PROFILE, tactile, pointcloud_points, rl_variant, auto_eval, auto_eval_num_seeds)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[A100_COMPAT_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[A100_COMPAT_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[A100_COMPAT_PROFILE].function_env,
+))
+def train_pipeline_a100_compat_remote(
+    run_name: str,
+    seed: int = 0,
+    stage: str = "both",
+    extra_args: tuple[str, ...] = (),
+    stage1_extra_args: tuple[str, ...] = (),
+    stage2_extra_args: tuple[str, ...] = (),
+    tactile: bool = False,
+    pointcloud_points: int = 1024,
+    rl_variant: str = RL_VARIANT_PPO,
+    auto_eval: bool = False,
+    auto_eval_num_seeds: int = DEFAULT_AUTO_EVAL_NUM_SEEDS,
+):
+    """Durable cloud-side stage pipeline on A100 compatibility image."""
+    emit_runtime_diagnostics(A100_COMPAT_PROFILE)
+    _run_stage_pipeline(run_name, seed, stage, extra_args, stage1_extra_args, stage2_extra_args, A100_COMPAT_PROFILE, tactile, pointcloud_points, rl_variant, auto_eval, auto_eval_num_seeds)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[H100_STABLE_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[H100_STABLE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[H100_STABLE_PROFILE].function_env,
+))
+def train_pipeline_h100_stable_remote(
+    run_name: str,
+    seed: int = 0,
+    stage: str = "both",
+    extra_args: tuple[str, ...] = (),
+    stage1_extra_args: tuple[str, ...] = (),
+    stage2_extra_args: tuple[str, ...] = (),
+    tactile: bool = False,
+    pointcloud_points: int = 1024,
+    rl_variant: str = RL_VARIANT_PPO,
+    auto_eval: bool = False,
+    auto_eval_num_seeds: int = DEFAULT_AUTO_EVAL_NUM_SEEDS,
+):
+    """Durable cloud-side stage pipeline on H100 stable."""
+    emit_runtime_diagnostics(H100_STABLE_PROFILE)
+    _run_stage_pipeline(run_name, seed, stage, extra_args, stage1_extra_args, stage2_extra_args, H100_STABLE_PROFILE, tactile, pointcloud_points, rl_variant, auto_eval, auto_eval_num_seeds)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[H100_PROBE_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[H100_PROBE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[H100_PROBE_PROFILE].function_env,
+))
+def train_pipeline_h100_probe_remote(
+    run_name: str,
+    seed: int = 0,
+    stage: str = "both",
+    extra_args: tuple[str, ...] = (),
+    stage1_extra_args: tuple[str, ...] = (),
+    stage2_extra_args: tuple[str, ...] = (),
+    tactile: bool = False,
+    pointcloud_points: int = 1024,
+    rl_variant: str = RL_VARIANT_PPO,
+    auto_eval: bool = False,
+    auto_eval_num_seeds: int = DEFAULT_AUTO_EVAL_NUM_SEEDS,
+):
+    """Durable cloud-side stage pipeline on H100 probe."""
+    emit_runtime_diagnostics(H100_PROBE_PROFILE)
+    _run_stage_pipeline(run_name, seed, stage, extra_args, stage1_extra_args, stage2_extra_args, H100_PROBE_PROFILE, tactile, pointcloud_points, rl_variant, auto_eval, auto_eval_num_seeds)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[H100_COMPAT_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[H100_COMPAT_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[H100_COMPAT_PROFILE].function_env,
+))
+def train_pipeline_h100_compat_remote(
+    run_name: str,
+    seed: int = 0,
+    stage: str = "both",
+    extra_args: tuple[str, ...] = (),
+    stage1_extra_args: tuple[str, ...] = (),
+    stage2_extra_args: tuple[str, ...] = (),
+    tactile: bool = False,
+    pointcloud_points: int = 1024,
+    rl_variant: str = RL_VARIANT_PPO,
+    auto_eval: bool = False,
+    auto_eval_num_seeds: int = DEFAULT_AUTO_EVAL_NUM_SEEDS,
+):
+    """Durable cloud-side stage pipeline on H100 compatibility image."""
+    emit_runtime_diagnostics(H100_COMPAT_PROFILE)
+    _run_stage_pipeline(run_name, seed, stage, extra_args, stage1_extra_args, stage2_extra_args, H100_COMPAT_PROFILE, tactile, pointcloud_points, rl_variant, auto_eval, auto_eval_num_seeds)
+
+
+@app.function(**_modal_function_kwargs(
+    volumes={VOLUME_PATH: volume},
+    timeout=DEFAULT_TIMEOUT_SECONDS,
+    image=RUNTIME_PROFILES[T4_STABLE_PROFILE].image,
+    secrets=function_secrets,
+    gpu=RUNTIME_PROFILES[T4_STABLE_PROFILE].gpu,
+    function_env=RUNTIME_PROFILES[T4_STABLE_PROFILE].function_env,
+))
 def eval_sweep_t4_stable_remote(
     manifest: str,
     output_dir: str = "",
@@ -1637,6 +1962,8 @@ def main(
     seed: int = 0,
     stage: str = "both",
     overrides: str = "",
+    stage1_overrides: str = "",
+    stage2_overrides: str = "",
     runtime_profile: str = DEFAULT_RUNTIME_PROFILE,
     tactile: bool = False,
     pointcloud_points: int = 1024,
@@ -1651,7 +1978,9 @@ def main(
         run_name: Name for this training run (used in output paths and wandb).
         seed: Random seed (default: 0).
         stage: Which stage to train — "1", "2", "3", "both", or "all" (default: "both").
-        overrides: Extra Hydra overrides passed to train.py.
+        overrides: Extra Hydra overrides passed to every requested stage.
+        stage1_overrides: Extra Hydra overrides passed only to Stage 1. These replace same-key shared overrides.
+        stage2_overrides: Extra Hydra overrides passed only to Stage 2/eval. These replace same-key shared overrides.
         runtime_profile: Modal runtime profile. One of t4_stable, a100_probe, a100_compat, h100_stable, h100_probe, h100_compat.
         tactile: When true, append tactile actor observations to Stage 1/2/3 and tactile history to Stage 2/3.
         pointcloud_points: Point cloud resolution for shape encoding. Must be 100, 200, 300, 500, or 1024.
@@ -1659,11 +1988,13 @@ def main(
         auto_eval: Run a Stage 2 BTG1-BTG13 mean-object eval sweep after Stage 2 completes.
         auto_eval_num_seeds: Number of eval seeds per BTG object for --auto-eval.
     """
-    run_requested_stages(
+    run_requested_stages_durable(
         run_name,
         seed=seed,
         stage=stage,
         extra_args=parse_overrides(overrides),
+        stage1_extra_args=parse_overrides(stage1_overrides),
+        stage2_extra_args=parse_overrides(stage2_overrides),
         runtime_profile=runtime_profile,
         tactile=tactile,
         pointcloud_points=pointcloud_points,

@@ -765,6 +765,132 @@ def test_run_requested_stages_can_auto_eval_after_stage2(monkeypatch):
     ]
 
 
+def test_run_requested_stages_durable_uses_cloud_pipeline_for_multi_stage(monkeypatch):
+    calls = []
+    fake_call = SimpleNamespace(object_id="fc-123")
+    monkeypatch.setattr(
+        modal_train,
+        "train_pipeline_a100_compat_remote",
+        SimpleNamespace(spawn=lambda *args: calls.append(args) or fake_call),
+    )
+
+    result = modal_train.run_requested_stages_durable(
+        "demo",
+        seed=8,
+        stage="both",
+        extra_args=("train.ppo.max_agent_steps=1024",),
+        stage1_extra_args=("train.ppo.max_agent_steps=1500000000",),
+        stage2_extra_args=("train.ppo.max_agent_steps=200000000",),
+        runtime_profile=modal_train.A100_COMPAT_PROFILE,
+        tactile=True,
+        pointcloud_points=200,
+        rl_variant=modal_train.RL_VARIANT_PPO_CONTACT_AUX,
+        auto_eval=True,
+        auto_eval_num_seeds=3,
+    )
+
+    assert result is fake_call
+    assert calls == [
+        (
+            "demo",
+            8,
+            "both",
+            ("train.ppo.max_agent_steps=1024",),
+            ("train.ppo.max_agent_steps=1500000000",),
+            ("train.ppo.max_agent_steps=200000000",),
+            True,
+            200,
+            modal_train.RL_VARIANT_PPO_CONTACT_AUX,
+            True,
+            3,
+        )
+    ]
+
+
+def test_run_stage_pipeline_runs_stages_and_eval_sequentially(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        modal_train,
+        "_run_stage",
+        lambda stage, run_name, seed=0, extra_args=(), tactile=False: calls.append(
+            ("stage", stage, run_name, seed, extra_args)
+        ),
+    )
+    monkeypatch.setattr(
+        modal_train,
+        "_run_eval_sweep",
+        lambda manifest, output_dir="", dry_run=False, wandb_name="", wandb_group="eval", auto_run_name="", tactile_args=(), pointcloud_points=1024, num_seeds=5: calls.append(
+            ("eval", manifest, output_dir, dry_run, wandb_name, wandb_group, auto_run_name, tactile_args, pointcloud_points, num_seeds)
+        ),
+    )
+
+    modal_train._run_stage_pipeline(
+        "demo",
+        seed=9,
+        stage="both",
+        extra_args=("train.ppo.max_agent_steps=1024",),
+        stage1_extra_args=("train.ppo.max_agent_steps=1500000000",),
+        stage2_extra_args=("train.ppo.max_agent_steps=200000000",),
+        runtime_profile=modal_train.A100_COMPAT_PROFILE,
+        tactile=True,
+        pointcloud_points=100,
+        rl_variant=modal_train.RL_VARIANT_PPO_RECURRENT,
+        auto_eval=True,
+        auto_eval_num_seeds=7,
+    )
+
+    recurrent_args = (
+        "train.ppo.recurrent_obs=True",
+        "train.ppo.recurrent_obs_seq_len=3",
+        "train.ppo.recurrent_hidden_size=128",
+        "task.env.hora.nPointCloudPts=100",
+        "train.ppo.n_pointcloud_pts=100",
+    )
+    assert calls == [
+        (
+            "stage",
+            1,
+            "demo",
+            9,
+            (
+                "train.ppo.max_agent_steps=1500000000",
+                *recurrent_args,
+                "task.env.hora.useTactileObs=True",
+                "task.env.hora.useTactileHist=False",
+            ),
+        ),
+        (
+            "stage",
+            2,
+            "demo",
+            9,
+            (
+                "train.ppo.max_agent_steps=200000000",
+                *recurrent_args,
+                "task.env.hora.useTactileObs=True",
+                "task.env.hora.useTactileHist=True",
+            ),
+        ),
+        (
+            "eval",
+            "",
+            modal_train.get_auto_eval_output_dir("demo"),
+            False,
+            modal_train.get_auto_eval_wandb_name("demo"),
+            "eval",
+            "demo",
+            (
+                "train.ppo.max_agent_steps=200000000",
+                *recurrent_args,
+                "task.env.hora.useTactileObs=True",
+                "task.env.hora.useTactileHist=True",
+            ),
+            100,
+            7,
+        ),
+    ]
+
+
 def test_run_requested_stages_can_dispatch_stage3(monkeypatch):
     calls = []
     monkeypatch.setattr(
@@ -808,14 +934,17 @@ def test_run_requested_stages_can_dispatch_stage3(monkeypatch):
 def test_main_parses_overrides_before_dispatch(monkeypatch):
     captured = {}
 
-    def fake_run_requested_stages(
+    def fake_run_requested_stages_durable(
         run_name,
         seed=0,
         stage="both",
         extra_args=(),
+        stage1_extra_args=(),
+        stage2_extra_args=(),
         runtime_profile=modal_train.DEFAULT_RUNTIME_PROFILE,
         tactile=False,
         pointcloud_points=1024,
+        rl_variant=modal_train.RL_VARIANT_PPO,
         auto_eval=False,
         auto_eval_num_seeds=modal_train.DEFAULT_AUTO_EVAL_NUM_SEEDS,
     ):
@@ -823,19 +952,24 @@ def test_main_parses_overrides_before_dispatch(monkeypatch):
         captured["seed"] = seed
         captured["stage"] = stage
         captured["extra_args"] = extra_args
+        captured["stage1_extra_args"] = stage1_extra_args
+        captured["stage2_extra_args"] = stage2_extra_args
         captured["runtime_profile"] = runtime_profile
         captured["tactile"] = tactile
         captured["pointcloud_points"] = pointcloud_points
+        captured["rl_variant"] = rl_variant
         captured["auto_eval"] = auto_eval
         captured["auto_eval_num_seeds"] = auto_eval_num_seeds
 
-    monkeypatch.setattr(modal_train, "run_requested_stages", fake_run_requested_stages)
+    monkeypatch.setattr(modal_train, "run_requested_stages_durable", fake_run_requested_stages_durable)
 
     modal_train.main(
         run_name="demo",
         seed=5,
         stage="2",
         overrides='task.env.numEnvs=64 "train.notes=hello world"',
+        stage1_overrides="train.ppo.max_agent_steps=1500000000",
+        stage2_overrides="train.ppo.max_agent_steps=200000000",
         runtime_profile=modal_train.A100_COMPAT_PROFILE,
         tactile=True,
         pointcloud_points=1024,
@@ -848,9 +982,12 @@ def test_main_parses_overrides_before_dispatch(monkeypatch):
         "seed": 5,
         "stage": "2",
         "extra_args": ("task.env.numEnvs=64", "train.notes=hello world"),
+        "stage1_extra_args": ("train.ppo.max_agent_steps=1500000000",),
+        "stage2_extra_args": ("train.ppo.max_agent_steps=200000000",),
         "runtime_profile": modal_train.A100_COMPAT_PROFILE,
         "tactile": True,
         "pointcloud_points": 1024,
+        "rl_variant": modal_train.RL_VARIANT_PPO,
         "auto_eval": True,
         "auto_eval_num_seeds": 9,
     }
