@@ -377,6 +377,45 @@ def test_actor_critic_supports_contact_event_gated_actor():
     assert extrin_gt is None
 
 
+def test_actor_critic_supports_contact_event_gated_v2_stats():
+    model = padapt_module.ActorCritic(
+        {
+            "actor_units": [8, 4],
+            "priv_mlp_units": [4, 8],
+            "actions_num": 2,
+            "input_shape": (132,),
+            "priv_info": True,
+            "proprio_adapt": False,
+            "priv_info_dim": 9,
+            "asymmetric_critic": True,
+            "actor_use_privileged_info": False,
+            "contact_event_gating": True,
+            "contact_num_modes": 4,
+            "contact_gate_hidden_size": 8,
+            "contact_tactile_dim": 12,
+            "contact_history_len": 3,
+            "contact_gate_event_features": True,
+            "contact_gate_threshold": 0.05,
+        }
+    )
+
+    result = model(
+        {
+            "obs": torch.randn(2, 132),
+            "priv_info": torch.randn(2, 9),
+            "prev_actions": torch.randn(2, 2),
+        }
+    )
+    gate_stats = result["contact_gate_stats"]
+
+    assert model.contact_gate.gate[0].in_features == 111
+    assert result["mus"].shape == (2, 2)
+    assert gate_stats["mean_gates"].shape == (4,)
+    assert gate_stats["balance_loss"].shape == ()
+    assert gate_stats["switch_loss"].shape == ()
+    assert torch.allclose(gate_stats["mean_gates"].sum(), torch.ones(()), atol=1e-5)
+
+
 def test_actor_critic_supports_contact_reset_recurrent_encoder():
     model = padapt_module.ActorCritic(
         {

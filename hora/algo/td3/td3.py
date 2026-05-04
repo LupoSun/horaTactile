@@ -147,6 +147,8 @@ class TD3(object):
             "contact_gate_hidden_size": self.ppo_config.get("contact_gate_hidden_size", 32),
             "contact_tactile_dim": self.ppo_config.get("contact_tactile_dim", 12),
             "contact_history_len": self.ppo_config.get("contact_history_len", 3),
+            "contact_gate_event_features": self.ppo_config.get("contact_gate_event_features", False),
+            "contact_gate_threshold": self.ppo_config.get("contact_gate_threshold", 0.05),
             "contact_transition_aux_loss": self.ppo_config.get("contact_transition_aux_loss", False),
         }
         self.actor = ActorCritic(net_config).to(self.device)

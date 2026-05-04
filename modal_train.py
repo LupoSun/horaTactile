@@ -36,6 +36,7 @@ Usage:
     modal run --detach modal_train.py::main --run-name ppo_asym --stage both --rl-variant ppo_asym_critic --tactile
     modal run --detach modal_train.py::main --run-name ppo_tuned --stage both --rl-variant ppo_tuned --tactile
     modal run --detach modal_train.py::main --run-name ppo_contact --stage both --rl-variant ppo_contact_gated --tactile
+    modal run --detach modal_train.py::main --run-name ppo_contact_v2 --stage both --rl-variant ppo_asym_contact_gated_v2 --tactile
     modal run --detach modal_train.py::main --run-name ppo_contact_reset --stage both --rl-variant ppo_contact_reset --tactile
     modal run --detach modal_train.py::main --run-name ppo_contact_aux --stage both --rl-variant ppo_contact_aux --tactile
     modal run --detach modal_train.py::main --run-name td3 --stage both --rl-variant td3 --pointcloud-points 100
@@ -151,6 +152,7 @@ RL_VARIANT_PPO_RECURRENT = "ppo_recurrent"
 RL_VARIANT_PPO_ASYM_CRITIC = "ppo_asym_critic"
 RL_VARIANT_PPO_TUNED = "ppo_tuned"
 RL_VARIANT_PPO_CONTACT_GATED = "ppo_contact_gated"
+RL_VARIANT_PPO_ASYM_CONTACT_GATED_V2 = "ppo_asym_contact_gated_v2"
 RL_VARIANT_PPO_CONTACT_RESET = "ppo_contact_reset"
 RL_VARIANT_PPO_CONTACT_AUX = "ppo_contact_aux"
 RL_VARIANT_TD3 = "td3"
@@ -160,6 +162,7 @@ RL_VARIANT_CHOICES = (
     RL_VARIANT_PPO_ASYM_CRITIC,
     RL_VARIANT_PPO_TUNED,
     RL_VARIANT_PPO_CONTACT_GATED,
+    RL_VARIANT_PPO_ASYM_CONTACT_GATED_V2,
     RL_VARIANT_PPO_CONTACT_RESET,
     RL_VARIANT_PPO_CONTACT_AUX,
     RL_VARIANT_TD3,
@@ -444,6 +447,18 @@ def with_rl_variant_overrides(extra_args: tuple[str, ...], rl_variant: str = RL_
         append_if_missing("train.ppo.contact_gate_hidden_size", "32")
         append_if_missing("train.ppo.contact_tactile_dim", "12")
         append_if_missing("train.ppo.contact_history_len", "3")
+    elif rl_variant == RL_VARIANT_PPO_ASYM_CONTACT_GATED_V2:
+        append_if_missing("train.ppo.asymmetric_critic", "True")
+        append_if_missing("train.ppo.actor_use_privileged_info", "False")
+        append_if_missing("train.ppo.contact_event_gating", "True")
+        append_if_missing("train.ppo.contact_num_modes", "4")
+        append_if_missing("train.ppo.contact_gate_hidden_size", "32")
+        append_if_missing("train.ppo.contact_tactile_dim", "12")
+        append_if_missing("train.ppo.contact_history_len", "3")
+        append_if_missing("train.ppo.contact_gate_event_features", "True")
+        append_if_missing("train.ppo.contact_gate_threshold", "0.05")
+        append_if_missing("train.ppo.contact_gate_balance_coef", "0.01")
+        append_if_missing("train.ppo.contact_gate_switch_coef", "0.005")
     elif rl_variant == RL_VARIANT_PPO_CONTACT_RESET:
         append_if_missing("train.ppo.recurrent_obs", "True")
         append_if_missing("train.ppo.recurrent_obs_seq_len", "3")
@@ -2011,7 +2026,7 @@ def main(
         runtime_profile: Modal runtime profile. One of t4_stable, a100_probe, a100_compat, h100_stable, h100_probe, h100_compat.
         tactile: When true, append tactile actor observations to Stage 1/2/3 and tactile history to Stage 2/3.
         pointcloud_points: Point cloud resolution for shape encoding. Must be 100, 200, 300, 500, or 1024.
-        rl_variant: Stage 1 RL variant. One of ppo, ppo_recurrent, ppo_asym_critic, ppo_tuned, ppo_contact_gated, ppo_contact_reset, ppo_contact_aux, td3.
+        rl_variant: Stage 1 RL variant. One of ppo, ppo_recurrent, ppo_asym_critic, ppo_tuned, ppo_contact_gated, ppo_asym_contact_gated_v2, ppo_contact_reset, ppo_contact_aux, td3.
         auto_eval: Run a Stage 2 BTG1-BTG13 mean-object eval sweep after Stage 2 completes.
         auto_eval_num_seeds: Number of eval seeds per BTG object for --auto-eval.
     """

@@ -143,32 +143,124 @@ class ObservationEncoder(nn.Module):
 
 
 class ContactEventGate(nn.Module):
-    def __init__(self, obs_dim, history_len=3, tactile_dim=12, hidden_size=32, num_modes=4):
+    def __init__(
+        self,
+        obs_dim,
+        history_len=3,
+        tactile_dim=12,
+        hidden_size=32,
+        num_modes=4,
+        event_features=False,
+        contact_threshold=0.05,
+    ):
         super(ContactEventGate, self).__init__()
         self.history_len = history_len
         self.tactile_dim = tactile_dim
         self.num_modes = num_modes
+        self.event_features = event_features
+        self.contact_threshold = contact_threshold
         self.enabled = obs_dim >= history_len * tactile_dim
-        input_size = tactile_dim * 3 if self.enabled else 1
+        if not self.enabled:
+            input_size = 1
+        elif event_features:
+            input_size = tactile_dim * 9 + 3
+        else:
+            input_size = tactile_dim * 3
         self.gate = nn.Sequential(
             nn.Linear(input_size, hidden_size),
             nn.ReLU(inplace=True),
             nn.Linear(hidden_size, num_modes),
         )
 
-    def _contact_features(self, obs):
+    def _tactile_history(self, obs):
+        tactile = obs[:, -self.history_len * self.tactile_dim:]
+        return tactile.view(obs.shape[0], self.history_len, self.tactile_dim)
+
+    def _contact_features(self, obs, frame_index=None):
         if not self.enabled:
             return obs.new_zeros((obs.shape[0], 1))
-        tactile = obs[:, -self.history_len * self.tactile_dim:]
-        tactile = tactile.view(obs.shape[0], self.history_len, self.tactile_dim)
-        current = tactile[:, -1].abs()
-        previous = tactile[:, -2].abs() if self.history_len > 1 else current
+        tactile = self._tactile_history(obs)
+        idx = self.history_len - 1 if frame_index is None else frame_index
+        idx = max(0, min(idx, self.history_len - 1))
+        previous_idx = max(idx - 1, 0)
+        current = tactile[:, idx].abs()
+        previous = tactile[:, previous_idx].abs()
         event = (current - previous).abs()
-        context = tactile.abs().mean(dim=1)
-        return torch.cat([current, event, context], dim=-1)
+        context = tactile[:, :idx + 1].abs().mean(dim=1)
+        if not self.event_features:
+            return torch.cat([current, event, context], dim=-1)
+
+        signed_delta = current - previous
+        current_contact = current > self.contact_threshold
+        previous_contact = previous > self.contact_threshold
+        contact_make = torch.logical_and(current_contact, torch.logical_not(previous_contact)).float()
+        contact_break = torch.logical_and(torch.logical_not(current_contact), previous_contact).float()
+        contact_now = current_contact.float()
+        contact_duration = (tactile[:, :idx + 1].abs() > self.contact_threshold).float().mean(dim=1)
+        scalar_counts = torch.cat(
+            [
+                contact_now.mean(dim=1, keepdim=True),
+                contact_make.mean(dim=1, keepdim=True),
+                contact_break.mean(dim=1, keepdim=True),
+            ],
+            dim=-1,
+        )
+        return torch.cat(
+            [
+                current,
+                previous,
+                signed_delta,
+                event,
+                context,
+                contact_now,
+                contact_make,
+                contact_break,
+                contact_duration,
+                scalar_counts,
+            ],
+            dim=-1,
+        )
 
     def forward(self, obs):
         return torch.softmax(self.gate(self._contact_features(obs)), dim=-1)
+
+    def forward_with_stats(self, obs):
+        gates = self.forward(obs)
+        mean_gates = gates.mean(dim=0)
+        uniform = torch.full_like(mean_gates, 1.0 / self.num_modes)
+        balance_loss = torch.sum((mean_gates - uniform) ** 2)
+        entropy = -(gates * torch.log(gates.clamp_min(1e-8))).sum(dim=-1).mean()
+        max_prob = gates.max(dim=-1).values.mean()
+        if self.enabled and self.history_len > 1:
+            prev_gates = torch.softmax(
+                self.gate(self._contact_features(obs, frame_index=self.history_len - 2)),
+                dim=-1,
+            )
+            switch_loss = torch.mean(torch.sum((gates - prev_gates) ** 2, dim=-1))
+            tactile = self._tactile_history(obs)
+            current = tactile[:, -1].abs() > self.contact_threshold
+            previous = tactile[:, -2].abs() > self.contact_threshold
+            make = torch.logical_and(current, torch.logical_not(previous)).float().mean()
+            contact_break = torch.logical_and(torch.logical_not(current), previous).float().mean()
+            active = current.float().mean()
+            event = torch.logical_xor(current, previous).float().mean()
+        else:
+            switch_loss = gates.new_zeros(())
+            make = gates.new_zeros(())
+            contact_break = gates.new_zeros(())
+            active = gates.new_zeros(())
+            event = gates.new_zeros(())
+        return gates, {
+            'mean_gates': mean_gates,
+            'entropy': entropy,
+            'max_prob': max_prob,
+            'balance_loss': balance_loss,
+            'switch_loss': switch_loss,
+            'contact_make_rate': make,
+            'contact_break_rate': contact_break,
+            'active_contact_rate': active,
+            'contact_event_rate': event,
+        }
 
 
 class ActorCritic(nn.Module):
@@ -197,6 +289,8 @@ class ActorCritic(nn.Module):
         self.contact_history_len = kwargs.get('contact_history_len', self.recurrent_obs_seq_len)
         self.contact_num_modes = kwargs.get('contact_num_modes', 4)
         self.contact_gate_hidden_size = kwargs.get('contact_gate_hidden_size', 32)
+        self.contact_gate_event_features = kwargs.get('contact_gate_event_features', False)
+        self.contact_gate_threshold = kwargs.get('contact_gate_threshold', 0.05)
         self.contact_transition_aux_loss = kwargs.get('contact_transition_aux_loss', False)
         self.actor_obs_encoder = ObservationEncoder(
             obs_input_shape,
@@ -250,6 +344,8 @@ class ActorCritic(nn.Module):
                 tactile_dim=self.contact_tactile_dim,
                 hidden_size=self.contact_gate_hidden_size,
                 num_modes=self.contact_num_modes,
+                event_features=self.contact_gate_event_features,
+                contact_threshold=self.contact_gate_threshold,
             )
             self.mu_experts = nn.ModuleList(
                 [torch.nn.Linear(out_size, actions_num) for _ in range(self.contact_num_modes)]
@@ -299,14 +395,18 @@ class ActorCritic(nn.Module):
         mu, logstd, value, _, _ = self._actor_critic(obs_dict)
         return mu
 
-    def _actor_mu(self, actor_features, obs):
+    def _actor_mu(self, actor_features, obs, return_gate_stats=False):
         if not self.contact_event_gating:
-            return self.mu(actor_features)
-        gates = self.contact_gate(obs)
+            return (self.mu(actor_features), None) if return_gate_stats else self.mu(actor_features)
+        if return_gate_stats:
+            gates, gate_stats = self.contact_gate.forward_with_stats(obs)
+        else:
+            gates, gate_stats = self.contact_gate(obs), None
         expert_mus = torch.stack([expert(actor_features) for expert in self.mu_experts], dim=1)
-        return torch.sum(expert_mus * gates.unsqueeze(-1), dim=1)
+        mu = torch.sum(expert_mus * gates.unsqueeze(-1), dim=1)
+        return (mu, gate_stats) if return_gate_stats else mu
 
-    def _actor_critic(self, obs_dict, return_contact_transition=False):
+    def _actor_critic(self, obs_dict, return_contact_transition=False, return_contact_gate_stats=False):
         obs = obs_dict['obs']
         actor_obs = self.actor_obs_encoder(obs)
         critic_obs = actor_obs
@@ -330,13 +430,23 @@ class ActorCritic(nn.Module):
         actor_features = self.actor_mlp(actor_obs)
         critic_features = self.critic_mlp(critic_obs) if self.critic_mlp is not None else actor_features
         value = self.value(critic_features)
-        mu = self._actor_mu(actor_features, obs)
+        actor_mu_result = self._actor_mu(
+            actor_features,
+            obs,
+            return_gate_stats=return_contact_gate_stats,
+        )
+        if return_contact_gate_stats:
+            mu, contact_gate_stats = actor_mu_result
+        else:
+            mu, contact_gate_stats = actor_mu_result, None
         sigma = self.sigma
         contact_transition_logits = (
             self.contact_transition_head(actor_features)
             if self.contact_transition_aux_loss
             else None
         )
+        if return_contact_gate_stats:
+            return mu, mu * 0 + sigma, value, extrin, extrin_gt, contact_transition_logits, contact_gate_stats
         if return_contact_transition:
             return mu, mu * 0 + sigma, value, extrin, extrin_gt, contact_transition_logits
         return mu, mu * 0 + sigma, value, extrin, extrin_gt
@@ -357,8 +467,12 @@ class ActorCritic(nn.Module):
 
     def forward(self, input_dict):
         prev_actions = input_dict.get('prev_actions', None)
-        rst = self._actor_critic(input_dict, return_contact_transition=True)
-        mu, logstd, value, extrin, extrin_gt, contact_transition_logits = rst
+        rst = self._actor_critic(
+            input_dict,
+            return_contact_transition=True,
+            return_contact_gate_stats=True,
+        )
+        mu, logstd, value, extrin, extrin_gt, contact_transition_logits, contact_gate_stats = rst
         sigma = torch.exp(logstd)
         distr = torch.distributions.Normal(mu, sigma)
         entropy = distr.entropy().sum(dim=-1)
@@ -374,4 +488,6 @@ class ActorCritic(nn.Module):
         }
         if contact_transition_logits is not None:
             result['contact_transition_logits'] = contact_transition_logits
+        if contact_gate_stats is not None:
+            result['contact_gate_stats'] = contact_gate_stats
         return result

@@ -149,6 +149,19 @@ def test_with_rl_variant_overrides_selects_supported_presets():
         "train.ppo.contact_tactile_dim=12",
         "train.ppo.contact_history_len=3",
     )
+    assert modal_train.with_rl_variant_overrides((), rl_variant=modal_train.RL_VARIANT_PPO_ASYM_CONTACT_GATED_V2) == (
+        "train.ppo.asymmetric_critic=True",
+        "train.ppo.actor_use_privileged_info=False",
+        "train.ppo.contact_event_gating=True",
+        "train.ppo.contact_num_modes=4",
+        "train.ppo.contact_gate_hidden_size=32",
+        "train.ppo.contact_tactile_dim=12",
+        "train.ppo.contact_history_len=3",
+        "train.ppo.contact_gate_event_features=True",
+        "train.ppo.contact_gate_threshold=0.05",
+        "train.ppo.contact_gate_balance_coef=0.01",
+        "train.ppo.contact_gate_switch_coef=0.005",
+    )
     assert modal_train.with_rl_variant_overrides((), rl_variant=modal_train.RL_VARIANT_PPO_CONTACT_RESET) == (
         "train.ppo.recurrent_obs=True",
         "train.ppo.recurrent_obs_seq_len=3",

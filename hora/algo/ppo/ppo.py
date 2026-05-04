@@ -67,6 +67,8 @@ class PPO(object):
             'contact_gate_hidden_size': self.ppo_config.get('contact_gate_hidden_size', 32),
             'contact_tactile_dim': self.ppo_config.get('contact_tactile_dim', 12),
             'contact_history_len': self.ppo_config.get('contact_history_len', 3),
+            'contact_gate_event_features': self.ppo_config.get('contact_gate_event_features', False),
+            'contact_gate_threshold': self.ppo_config.get('contact_gate_threshold', 0.05),
             'contact_transition_aux_loss': self.ppo_config.get('contact_transition_aux_loss', False),
         }
         self.model = ActorCritic(net_config)
@@ -101,6 +103,8 @@ class PPO(object):
         self.contact_transition_aux_threshold = self.ppo_config.get('contact_transition_aux_threshold', 0.05)
         self.contact_tactile_dim = self.ppo_config.get('contact_tactile_dim', 12)
         self.contact_history_len = self.ppo_config.get('contact_history_len', 3)
+        self.contact_gate_balance_coef = self.ppo_config.get('contact_gate_balance_coef', 0.0)
+        self.contact_gate_switch_coef = self.ppo_config.get('contact_gate_switch_coef', 0.0)
         # ---- PPO Collect Param ----
         self.horizon_length = self.ppo_config['horizon_length']
         self.batch_size = self.horizon_length * self.num_actors
@@ -288,6 +292,8 @@ class PPO(object):
         self.set_train()
         a_losses, b_losses, c_losses, aux_losses = [], [], [], []
         entropies, kls = [], []
+        gate_usage_stats = []
+        gate_scalar_stats = {}
         for _ in range(0, self.mini_epochs_num):
             ep_kls = []
             for i in range(len(self.storage)):
@@ -318,6 +324,7 @@ class PPO(object):
                 entropy = res_dict['entropy']
                 mu = res_dict['mus']
                 sigma = res_dict['sigmas']
+                contact_gate_stats = res_dict.get('contact_gate_stats')
 
                 # actor loss
                 ratio = torch.exp(old_action_log_probs - action_log_probs)
@@ -340,6 +347,26 @@ class PPO(object):
                 a_loss, c_loss, entropy, b_loss = [torch.mean(loss) for loss in [a_loss, c_loss, entropy, b_loss]]
 
                 loss = a_loss + 0.5 * c_loss * self.critic_coef - entropy * self.entropy_coef + b_loss * self.bounds_loss_coef
+                if contact_gate_stats is not None:
+                    balance_loss = contact_gate_stats['balance_loss']
+                    switch_loss = contact_gate_stats['switch_loss']
+                    if self.contact_gate_balance_coef > 0:
+                        loss = loss + self.contact_gate_balance_coef * balance_loss
+                    if self.contact_gate_switch_coef > 0:
+                        loss = loss + self.contact_gate_switch_coef * switch_loss
+                    with torch.no_grad():
+                        gate_usage_stats.append(contact_gate_stats['mean_gates'].detach())
+                        for key in [
+                            'entropy',
+                            'max_prob',
+                            'balance_loss',
+                            'switch_loss',
+                            'contact_make_rate',
+                            'contact_break_rate',
+                            'active_contact_rate',
+                            'contact_event_rate',
+                        ]:
+                            gate_scalar_stats.setdefault(key, []).append(contact_gate_stats[key].detach())
                 if self.contact_transition_aux_loss and contact_transition_target is not None:
                     aux_loss = F.binary_cross_entropy_with_logits(
                         res_dict['contact_transition_logits'],
@@ -372,6 +399,19 @@ class PPO(object):
             for param_group in self.optimizer.param_groups:
                 param_group['lr'] = self.last_lr
             kls.append(av_kls)
+
+        if gate_usage_stats:
+            mean_usage = torch.stack(gate_usage_stats).mean(dim=0)
+            gate_log_stats = {
+                f'contact_gate/expert_{idx}_usage': mean_usage[idx].item()
+                for idx in range(mean_usage.shape[0])
+            }
+            for key, values in gate_scalar_stats.items():
+                value = torch.mean(torch.stack(values)).item()
+                gate_log_stats[f'contact_gate/{key}'] = value
+                if key in {'balance_loss', 'switch_loss'}:
+                    gate_log_stats[f'losses/contact_gate_{key}'] = value
+            self.extra_info.update(gate_log_stats)
 
         self.rl_train_time += (time.time() - _t)
         return a_losses, c_losses, b_losses, entropies, kls, aux_losses
