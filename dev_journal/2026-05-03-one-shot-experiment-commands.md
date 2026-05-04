@@ -19,6 +19,7 @@ pointcloud_points: 200
 stage1 steps: 1.5B
 stage2 steps: 500M
 eval seeds: 3
+optional CPU request: prefix any command with MODAL_CPU=8
 ```
 
 The run names below use a `0503_1p5b` suffix to avoid colliding with older outputs.

@@ -64,6 +64,16 @@ def test_parse_overrides_respects_shell_quoting():
     )
 
 
+def test_parse_modal_cpu_env_value():
+    assert modal_train._parse_modal_cpu(None) is None
+    assert modal_train._parse_modal_cpu("") is None
+    assert modal_train._parse_modal_cpu("8") == 8.0
+    assert modal_train._parse_modal_cpu("8.5") == 8.5
+
+    with pytest.raises(ValueError):
+        modal_train._parse_modal_cpu("0")
+
+
 def test_with_tactile_overrides_appends_tactile_once():
     assert modal_train.with_tactile_overrides(("train.ppo.max_agent_steps=1024",), tactile=False) == (
         "train.ppo.max_agent_steps=1024",

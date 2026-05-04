@@ -19,6 +19,7 @@ Usage:
     # Train stages 1/2, then automatically evaluate Stage 2 on BTG1-BTG13 mean objects
     modal run --detach modal_train.py::main --run-name my_exp --runtime-profile a100_compat --stage both --tactile --auto-eval
     modal run --detach modal_train.py::main --run-name my_exp --runtime-profile a100_compat --stage both --tactile --auto-eval --stage1-overrides "train.ppo.max_agent_steps=1500000000" --stage2-overrides "train.ppo.max_agent_steps=200000000"
+    MODAL_CPU=8 modal run --detach modal_train.py::main --run-name my_exp --runtime-profile a100_compat --stage both --tactile --auto-eval
 
     # Select an explicit runtime profile
     modal run modal_train.py::main --run-name my_exp --runtime-profile h100_stable --stage 1
@@ -116,6 +117,18 @@ A100_COMPAT_GPU = os.environ.get("MODAL_A100_COMPAT_GPU", A100_PROBE_GPU)
 H100_STABLE_GPU = _resolve_modal_gpu_name(os.environ.get("MODAL_H100_STABLE_GPU", "H100!"), fallback="H100")
 H100_PROBE_GPU = _resolve_modal_gpu_name(os.environ.get("MODAL_H100_GPU", "H100!"), fallback="H100")
 H100_COMPAT_GPU = _resolve_modal_gpu_name(os.environ.get("MODAL_H100_COMPAT_GPU", H100_PROBE_GPU), fallback="H100")
+
+
+def _parse_modal_cpu(value: str | None) -> float | None:
+    if value is None or not value.strip():
+        return None
+    cpu = float(value)
+    if cpu <= 0:
+        raise ValueError(f"MODAL_CPU must be positive, got {value!r}")
+    return cpu
+
+
+DEFAULT_MODAL_CPU = _parse_modal_cpu(os.environ.get("MODAL_CPU"))
 DEFAULT_TORCH_INSTALL = os.environ.get(
     "MODAL_TORCH_INSTALL",
     "torch==2.1.2+cu118 torchvision==0.16.2+cu118 torchaudio==2.1.2+cu118 "
@@ -270,11 +283,24 @@ if hasattr(stable_image, "env"):
 if hasattr(compat_image, "env"):
     compat_image = compat_image.env(env)
 
-_APP_FUNCTION_SUPPORTS_ENV = "env" in inspect.signature(app.function).parameters
+def _app_function_accepts_kwarg(name: str) -> bool:
+    signature = inspect.signature(app.function)
+    return name in signature.parameters or any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+
+
+_APP_FUNCTION_SUPPORTS_ENV = _app_function_accepts_kwarg("env")
+_APP_FUNCTION_SUPPORTS_CPU = _app_function_accepts_kwarg("cpu")
 
 
 def _modal_function_kwargs(function_env: dict[str, str] | None = None, **kwargs):
     function_kwargs = dict(kwargs)
+    if DEFAULT_MODAL_CPU is not None:
+        if not _APP_FUNCTION_SUPPORTS_CPU:
+            raise RuntimeError("MODAL_CPU was set, but this Modal client does not support app.function(cpu=...).")
+        function_kwargs.setdefault("cpu", DEFAULT_MODAL_CPU)
     if _APP_FUNCTION_SUPPORTS_ENV:
         merged_env = dict(env)
         if function_env:
@@ -710,6 +736,7 @@ def emit_runtime_diagnostics(runtime_profile: str):
     profile = get_runtime_profile(runtime_profile)
     print(f"[hora] Runtime profile: {profile.name}")
     print(f"[hora] Requested Modal GPU: {profile.gpu}")
+    print(f"[hora] Requested Modal CPU: {DEFAULT_MODAL_CPU if DEFAULT_MODAL_CPU is not None else 'Modal default'}")
     print(f"[hora] Profile description: {profile.description}")
 
     diagnostic_commands = [
