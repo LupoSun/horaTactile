@@ -1,0 +1,160 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M 0 0 L 12 6 L 0 12 z" fill="#111111"/>
+    </marker>
+    <marker id="blueArrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M 0 0 L 12 6 L 0 12 z" fill="#3f7dcc"/>
+    </marker>
+    <marker id="grayArrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M 0 0 L 12 6 L 0 12 z" fill="#777777"/>
+    </marker>
+    <style>
+      .title { font: 700 39px Arial, sans-serif; fill: #111; }
+      .section { font: 700 32px Arial, sans-serif; fill: #111; }
+      .label { font: 500 24px Arial, sans-serif; fill: #111; }
+      .small { font: 500 18px Arial, sans-serif; fill: #333; }
+      .tiny { font: 500 15px Arial, sans-serif; fill: #333; }
+      .math { font: italic 25px Georgia, serif; fill: #111; }
+      .box { fill: #ffffff; stroke: #111111; stroke-width: 3; rx: 13; }
+      .green { fill: #c9f5b9; stroke: #111111; stroke-width: 3; rx: 13; }
+      .blue { fill: #dbeafe; stroke: #111111; stroke-width: 3; rx: 13; }
+      .orange { fill: #ffe4c2; stroke: #111111; stroke-width: 3; rx: 13; }
+      .gray { fill: #eeeeee; stroke: #111111; stroke-width: 3; rx: 13; }
+      .pink { fill: #ffe4e6; stroke: #111111; stroke-width: 3; rx: 13; }
+      .arrow { stroke: #111111; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .blueArrow { stroke: #3f7dcc; stroke-width: 3; fill: none; marker-end: url(#blueArrow); stroke-dasharray: 9 7; }
+      .grayArrow { stroke: #777777; stroke-width: 3; fill: none; marker-end: url(#grayArrow); stroke-dasharray: 8 7; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1920" height="1080" fill="#ffffff"/>
+  <text x="48" y="58" class="title">Contact-Gated Policy Training Pipeline</text>
+  <text x="48" y="91" class="small">Qi-style two-stage teacher/adaptation pipeline, modified with a tactile contact-event gate and mixture-of-experts action head. No asymmetric critic.</text>
+
+  <!-- Stage 1 -->
+  <rect x="34" y="118" width="1852" height="430" fill="#ffffff" stroke="#111111" stroke-width="3" rx="28"/>
+  <text x="58" y="165" class="section">(1) Contact-Gated Oracle Policy Training</text>
+  <text x="1394" y="160" class="small">teacher policy sees privileged extrinsics z_t</text>
+
+  <rect x="70" y="198" width="318" height="68" class="box"/>
+  <text x="102" y="241" class="label">Proprioception o_t</text>
+
+  <rect x="70" y="289" width="318" height="76" class="box"/>
+  <text x="102" y="319" class="label">Tactile history</text>
+  <text x="102" y="346" class="small">{touch_{t-k}, ..., touch_t}</text>
+
+  <rect x="70" y="407" width="318" height="76" class="box"/>
+  <text x="102" y="437" class="label">Privileged inputs</text>
+  <text x="102" y="464" class="small">object mesh, pose, physics params</text>
+
+  <rect x="458" y="384" width="246" height="98" class="green"/>
+  <text x="506" y="423" class="label">Privileged</text>
+  <text x="520" y="454" class="label">Encoder</text>
+
+  <rect x="758" y="400" width="98" height="68" class="box"/>
+  <text x="790" y="443" class="math">z_t</text>
+
+  <rect x="458" y="194" width="246" height="104" class="green"/>
+  <text x="518" y="234" class="label">Actor</text>
+  <text x="510" y="265" class="label">Trunk</text>
+
+  <rect x="458" y="304" width="246" height="68" class="orange"/>
+  <text x="493" y="333" class="label">Contact-Event Gate</text>
+  <text x="488" y="357" class="tiny">current, delta, make, break, duration</text>
+
+  <rect x="914" y="218" width="230" height="110" class="blue"/>
+  <text x="968" y="258" class="label">Action</text>
+  <text x="958" y="290" class="label">Experts</text>
+  <text x="962" y="316" class="tiny">mu_1, mu_2, mu_3, mu_4</text>
+
+  <rect x="1210" y="224" width="198" height="98" class="blue"/>
+  <text x="1260" y="263" class="label">Soft</text>
+  <text x="1241" y="294" class="label">Mixture</text>
+
+  <rect x="1484" y="235" width="98" height="76" class="box"/>
+  <text x="1517" y="282" class="math">a_t</text>
+
+  <rect x="1652" y="203" width="182" height="118" class="box"/>
+  <text x="1688" y="249" class="label">Allegro</text>
+  <text x="1685" y="281" class="label">Env</text>
+  <text x="1678" y="305" class="tiny">object rotation</text>
+
+  <rect x="1585" y="393" width="250" height="94" class="pink"/>
+  <text x="1622" y="428" class="label">Stage 1 RL loss</text>
+  <text x="1620" y="455" class="small">PPO trains actor + value</text>
+  <text x="1620" y="478" class="tiny">plus optional gate balance/switch terms</text>
+
+  <path d="M 388 232 L 458 232" class="arrow"/>
+  <path d="M 388 327 L 458 337" class="arrow"/>
+  <path d="M 388 445 L 458 433" class="arrow"/>
+  <path d="M 704 433 L 758 433" class="arrow"/>
+  <path d="M 704 246 L 914 252" class="arrow"/>
+  <path d="M 704 338 L 914 292" class="arrow"/>
+  <path d="M 856 433 C 950 433 990 350 990 328" class="arrow"/>
+  <path d="M 1144 273 L 1210 273" class="arrow"/>
+  <path d="M 1408 273 L 1484 273" class="arrow"/>
+  <path d="M 1582 273 L 1652 263" class="arrow"/>
+  <path d="M 1834 263 C 1870 263 1872 178 1690 178 L 604 178 L 604 194" class="arrow"/>
+  <path d="M 1533 311 C 1533 370 1585 410 1585 434" class="blueArrow"/>
+
+  <!-- Stage 2 -->
+  <rect x="34" y="610" width="1852" height="360" fill="#ffffff" stroke="#111111" stroke-width="3" rx="28"/>
+  <text x="58" y="657" class="section">(2) Adaptation Training and Evaluation</text>
+  <text x="1330" y="652" class="small">student policy replaces z_t with z_hat_t from observation history</text>
+
+  <rect x="82" y="714" width="370" height="90" class="box"/>
+  <text x="116" y="750" class="label">Observation history</text>
+  <text x="116" y="779" class="small">{o_{t-k}, ..., o_t} with tactile</text>
+
+  <rect x="526" y="712" width="270" height="102" class="green"/>
+  <text x="575" y="752" class="label">Adaptation</text>
+  <text x="596" y="784" class="label">Encoder</text>
+
+  <rect x="858" y="730" width="110" height="70" class="box"/>
+  <text x="883" y="774" class="math">z_hat_t</text>
+
+  <rect x="1052" y="700" width="315" height="126" class="gray"/>
+  <text x="1100" y="742" class="label">Copied Contact-Gated</text>
+  <text x="1139" y="774" class="label">Policy</text>
+  <text x="1095" y="804" class="small">actor trunk + gate + experts</text>
+
+  <rect x="1432" y="730" width="118" height="70" class="box"/>
+  <text x="1461" y="774" class="math">a_hat_t</text>
+
+  <rect x="1620" y="704" width="210" height="116" class="box"/>
+  <text x="1652" y="748" class="label">Eval Rollout</text>
+  <text x="1652" y="779" class="small">BTG / new objects</text>
+
+  <rect x="590" y="850" width="520" height="78" class="pink"/>
+  <text x="626" y="883" class="label">Qi-style supervised adaptation losses</text>
+  <text x="626" y="910" class="small">L_z = ||z_t - z_hat_t||^2, L_a = ||a_t - a_hat_t||^2</text>
+
+  <path d="M 452 759 L 526 759" class="arrow"/>
+  <path d="M 796 763 L 858 763" class="arrow"/>
+  <path d="M 968 763 L 1052 763" class="arrow"/>
+  <path d="M 1367 763 L 1432 763" class="arrow"/>
+  <path d="M 1550 763 L 1620 763" class="arrow"/>
+  <path d="M 1830 762 C 1860 762 1864 676 1662 676 L 270 676 L 270 714" class="arrow"/>
+
+  <path d="M 807 468 C 807 585 870 705 908 730" class="blueArrow"/>
+  <path d="M 1533 311 C 1533 590 1000 610 1000 850" class="blueArrow"/>
+  <path d="M 1040 328 C 1040 575 1188 600 1188 700" class="grayArrow"/>
+  <text x="980" y="594" class="small">copy Stage 1 contact-gated policy</text>
+  <text x="760" y="606" class="small">teacher z_t and a_t supervise Stage 2</text>
+
+  <!-- Legend -->
+  <rect x="66" y="1000" width="1788" height="48" fill="#f8fafc" stroke="#cbd5e1" stroke-width="2" rx="12"/>
+  <rect x="92" y="1014" width="24" height="18" class="green"/>
+  <text x="124" y="1029" class="tiny">learned network</text>
+  <rect x="275" y="1014" width="24" height="18" class="blue"/>
+  <text x="307" y="1029" class="tiny">contact-gated mixture actor</text>
+  <rect x="565" y="1014" width="24" height="18" class="orange"/>
+  <text x="597" y="1029" class="tiny">tactile event gate</text>
+  <rect x="800" y="1014" width="24" height="18" class="pink"/>
+  <text x="832" y="1029" class="tiny">losses</text>
+  <line x1="1015" y1="1023" x2="1068" y2="1023" class="grayArrow"/>
+  <text x="1080" y="1029" class="tiny">copied policy</text>
+  <line x1="1245" y1="1023" x2="1298" y2="1023" class="blueArrow"/>
+  <text x="1310" y="1029" class="tiny">teacher supervision</text>
+</svg>
