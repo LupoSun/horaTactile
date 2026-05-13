@@ -56,6 +56,7 @@ class ProprioAdapt(object):
             'recurrent_obs_seq_len': self.ppo_config.get('recurrent_obs_seq_len', 3),
             'recurrent_hidden_size': self.ppo_config.get('recurrent_hidden_size', 128),
             'contact_reset_recurrent': self.ppo_config.get('contact_reset_recurrent', False),
+            'contact_options': self.ppo_config.get('contact_options', False),
             'contact_event_gating': self.ppo_config.get('contact_event_gating', False),
             'contact_num_modes': self.ppo_config.get('contact_num_modes', 4),
             'contact_gate_hidden_size': self.ppo_config.get('contact_gate_hidden_size', 32),
@@ -87,6 +88,12 @@ class ProprioAdapt(object):
         self.max_agent_steps = self.ppo_config['max_agent_steps']
         self.latent_loss_coef = self.ppo_config.get('adapt_latent_loss_coef', 1.0)
         self.action_loss_coef = self.ppo_config.get('adapt_action_loss_coef', 1.0)
+        self.contact_options = self.ppo_config.get('contact_options', False)
+        self.contact_option_max_dwell = self.ppo_config.get('contact_option_max_dwell', 12)
+        self.contact_option_boundary_mode = self.ppo_config.get('contact_option_boundary_mode', 'soft')
+        self.contact_history_len = self.ppo_config.get('contact_history_len', 3)
+        self.contact_tactile_dim = self.ppo_config.get('contact_tactile_dim', 12)
+        self.contact_transition_aux_threshold = self.ppo_config.get('contact_transition_aux_threshold', 0.05)
         # ---- Optim ----
         adapt_params = []
         for name, p in self.model.named_parameters():
@@ -104,6 +111,9 @@ class ProprioAdapt(object):
         batch_size = self.num_actors
         self.step_reward = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
         self.step_length = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
+        self.dones = torch.ones(batch_size, dtype=torch.uint8, device=self.device)
+        self.contact_current_options = torch.zeros(batch_size, dtype=torch.long, device=self.device)
+        self.contact_option_dwell = torch.zeros(batch_size, dtype=torch.long, device=self.device)
 
     def set_eval(self):
         self.model.eval()
@@ -118,9 +128,51 @@ class ProprioAdapt(object):
                 'obs': self.running_mean_std(obs_dict['obs']),
                 'proprio_hist': self.sa_mean_std(obs_dict['proprio_hist'].detach()),
             }
+            if self.contact_options:
+                input_dict['contact_option_state'] = self.contact_option_state(obs_dict['obs'])
             mu = self.model.act_inference(input_dict)
+            if self.contact_options:
+                self.update_contact_option_state(input_dict.get('contact_option_result'))
             mu = torch.clamp(mu, -1.0, 1.0)
-            obs_dict, r, done, info = self.env.step(mu)
+            obs_dict, r, self.dones, info = self.env.step(mu)
+
+    def contact_transition_target(self, obs):
+        tactile_history_dim = self.contact_history_len * self.contact_tactile_dim
+        if obs.shape[-1] < tactile_history_dim:
+            return obs.new_zeros((obs.shape[0], self.contact_tactile_dim))
+        tactile = obs[:, -tactile_history_dim:].view(
+            obs.shape[0],
+            self.contact_history_len,
+            self.contact_tactile_dim,
+        )
+        current_contact = tactile[:, -1].abs() > self.contact_transition_aux_threshold
+        previous_contact = tactile[:, -2].abs() > self.contact_transition_aux_threshold
+        return torch.logical_xor(current_contact, previous_contact).float()
+
+    def contact_option_state(self, obs):
+        force_switch = self.contact_option_dwell >= self.contact_option_max_dwell
+        if self.contact_option_boundary_mode == 'forced':
+            contact_event = self.contact_transition_target(obs).any(dim=-1)
+            force_switch = torch.logical_or(force_switch, contact_event)
+        return {
+            'prev_options': self.contact_current_options,
+            'option_dwell': self.contact_option_dwell,
+            'reset_mask': self.dones.bool(),
+            'force_switch_mask': force_switch,
+        }
+
+    def update_contact_option_state(self, option_result):
+        if not self.contact_options or option_result is None:
+            return
+        option_ids = option_result['contact_option_ids'].detach().long()
+        boundary = option_result['contact_option_active'].detach().bool()
+        next_dwell = torch.where(
+            boundary,
+            torch.zeros_like(self.contact_option_dwell),
+            self.contact_option_dwell + 1,
+        )
+        self.contact_current_options = option_ids
+        self.contact_option_dwell = next_dwell
 
     def train(self):
         _t = time.time()
@@ -133,15 +185,31 @@ class ProprioAdapt(object):
                 'obs': self.running_mean_std(obs_dict['obs']).detach(),
                 'proprio_hist': self.sa_mean_std(obs_dict['proprio_hist'].detach()),
             }
+            if self.contact_options:
+                input_dict['contact_option_state'] = self.contact_option_state(obs_dict['obs'])
             teacher_dict = {
                 'priv_info': obs_dict['priv_info'],
             }
             if self.use_shape_priv_info:
                 teacher_dict['point_cloud'] = obs_dict['point_cloud']
-            mu, _, _, e, e_gt = self.model._actor_critic(input_dict)
+            actor_result = self.model._actor_critic(
+                input_dict,
+                option_state=input_dict.get('contact_option_state'),
+            )
+            mu, _, _, e, e_gt = actor_result[:5]
+            option_result = actor_result[5] if len(actor_result) > 5 else None
             with torch.no_grad():
                 e_gt = torch.tanh(self.model._encode_privileged(teacher_dict))
-                mu_gt = self.model.act_from_extrin(input_dict['obs'], e_gt)
+                selected_option_state = None
+                if self.contact_options and option_result is not None:
+                    selected_option_state = {
+                        'option_ids': option_result['contact_option_ids'],
+                        'prev_options': option_result['contact_prev_option_ids'],
+                        'option_active': option_result['contact_option_active'],
+                        'termination_target': option_result['contact_termination_target'],
+                        'termination_active': option_result['contact_termination_active'],
+                    }
+                mu_gt = self.model.act_from_extrin(input_dict['obs'], e_gt, option_state=selected_option_state)
             latent_loss = ((e - e_gt) ** 2).mean()
             action_loss = ((mu - mu_gt) ** 2).mean()
             loss = self.latent_loss_coef * latent_loss + self.action_loss_coef * action_loss
@@ -154,8 +222,11 @@ class ProprioAdapt(object):
             self.loss_stat_cnt += 1
 
             mu = mu.detach()
+            if self.contact_options:
+                self.update_contact_option_state(option_result)
             mu = torch.clamp(mu, -1.0, 1.0)
             obs_dict, r, done, info = self.env.step(mu)
+            self.dones = done
             self.agent_steps += self.batch_size
 
             # ---- statistics

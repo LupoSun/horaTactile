@@ -166,6 +166,7 @@ class ContactEventGate(nn.Module):
             input_size = tactile_dim * 9 + 3
         else:
             input_size = tactile_dim * 3
+        self.feature_dim = input_size
         self.gate = nn.Sequential(
             nn.Linear(input_size, hidden_size),
             nn.ReLU(inplace=True),
@@ -263,6 +264,53 @@ class ContactEventGate(nn.Module):
         }
 
 
+class ContactOptionController(nn.Module):
+    def __init__(
+        self,
+        obs_dim,
+        actor_feature_dim,
+        history_len=3,
+        tactile_dim=12,
+        hidden_size=32,
+        num_modes=4,
+        event_features=True,
+        contact_threshold=0.05,
+    ):
+        super(ContactOptionController, self).__init__()
+        self.num_modes = num_modes
+        self.feature_extractor = ContactEventGate(
+            obs_dim,
+            history_len=history_len,
+            tactile_dim=tactile_dim,
+            hidden_size=hidden_size,
+            num_modes=num_modes,
+            event_features=event_features,
+            contact_threshold=contact_threshold,
+        )
+        manager_input_dim = actor_feature_dim + self.feature_extractor.feature_dim
+        self.option_policy = nn.Sequential(
+            nn.Linear(manager_input_dim, hidden_size),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_size, num_modes),
+        )
+        self.termination_policy = nn.Sequential(
+            nn.Linear(manager_input_dim + num_modes, hidden_size),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden_size, 1),
+        )
+
+    def manager_features(self, actor_features, obs):
+        contact_features = self.feature_extractor._contact_features(obs)
+        return torch.cat([actor_features, contact_features], dim=-1)
+
+    def forward(self, actor_features, obs, prev_options):
+        manager_features = self.manager_features(actor_features, obs)
+        option_logits = self.option_policy(manager_features)
+        prev_one_hot = torch.nn.functional.one_hot(prev_options.long(), self.num_modes).float()
+        termination_logits = self.termination_policy(torch.cat([manager_features, prev_one_hot], dim=-1)).squeeze(-1)
+        return option_logits, termination_logits
+
+
 class ActorCritic(nn.Module):
     def __init__(self, kwargs):
         nn.Module.__init__(self)
@@ -284,6 +332,7 @@ class ActorCritic(nn.Module):
         self.recurrent_obs_seq_len = kwargs.get('recurrent_obs_seq_len', 3)
         self.recurrent_hidden_size = kwargs.get('recurrent_hidden_size', 128)
         self.contact_reset_recurrent = kwargs.get('contact_reset_recurrent', False)
+        self.contact_options = kwargs.get('contact_options', False)
         self.contact_event_gating = kwargs.get('contact_event_gating', False)
         self.contact_tactile_dim = kwargs.get('contact_tactile_dim', 12)
         self.contact_history_len = kwargs.get('contact_history_len', self.recurrent_obs_seq_len)
@@ -337,7 +386,22 @@ class ActorCritic(nn.Module):
         if self.has_separate_critic:
             self.critic_mlp = MLP(units=self.units, input_size=critic_input_shape)
         self.value = torch.nn.Linear(out_size, 1)
-        if self.contact_event_gating:
+        if self.contact_options:
+            self.contact_option_controller = ContactOptionController(
+                obs_input_shape,
+                actor_feature_dim=out_size,
+                history_len=self.contact_history_len,
+                tactile_dim=self.contact_tactile_dim,
+                hidden_size=self.contact_gate_hidden_size,
+                num_modes=self.contact_num_modes,
+                event_features=self.contact_gate_event_features,
+                contact_threshold=self.contact_gate_threshold,
+            )
+            self.mu_experts = nn.ModuleList(
+                [torch.nn.Linear(out_size, actions_num) for _ in range(self.contact_num_modes)]
+            )
+            self.contact_gate = None
+        elif self.contact_event_gating:
             self.contact_gate = ContactEventGate(
                 obs_input_shape,
                 history_len=self.contact_history_len,
@@ -351,6 +415,7 @@ class ActorCritic(nn.Module):
                 [torch.nn.Linear(out_size, actions_num) for _ in range(self.contact_num_modes)]
             )
         else:
+            self.contact_option_controller = None
             self.contact_gate = None
             self.mu = torch.nn.Linear(out_size, actions_num)
         if self.contact_transition_aux_loss:
@@ -376,7 +441,10 @@ class ActorCritic(nn.Module):
     def act(self, obs_dict):
         # used specifically to collection samples during training
         # it contains exploration so needs to sample from distribution
-        mu, logstd, value, _, _ = self._actor_critic(obs_dict)
+        option_state = obs_dict.get('contact_option_state')
+        rst = self._actor_critic(obs_dict, option_state=option_state)
+        mu, logstd, value = rst[:3]
+        option_result = rst[5] if len(rst) > 5 else None
         sigma = torch.exp(logstd)
         distr = torch.distributions.Normal(mu, sigma)
         selected_action = distr.sample()
@@ -387,15 +455,77 @@ class ActorCritic(nn.Module):
             'mus': mu,
             'sigmas': sigma,
         }
+        if option_result is not None:
+            result.update(option_result)
         return result
 
     @torch.no_grad()
     def act_inference(self, obs_dict):
         # used for testing
-        mu, logstd, value, _, _ = self._actor_critic(obs_dict)
+        option_state = obs_dict.get('contact_option_state')
+        rst = self._actor_critic(obs_dict, option_state=option_state)
+        mu, logstd, value = rst[:3]
+        option_result = rst[5] if len(rst) > 5 else None
+        if option_result is not None:
+            obs_dict['contact_option_result'] = option_result
         return mu
 
-    def _actor_mu(self, actor_features, obs, return_gate_stats=False):
+    def _option_mu(self, actor_features, option_ids):
+        expert_mus = torch.stack([expert(actor_features) for expert in self.mu_experts], dim=1)
+        gather_index = option_ids.long().view(-1, 1, 1).expand(-1, 1, expert_mus.shape[-1])
+        return expert_mus.gather(1, gather_index).squeeze(1)
+
+    def _sample_contact_options(self, actor_features, obs, option_state):
+        batch_size = obs.shape[0]
+        if option_state is None:
+            prev_options = torch.zeros(batch_size, dtype=torch.long, device=obs.device)
+            option_dwell = torch.zeros(batch_size, dtype=torch.long, device=obs.device)
+            reset_mask = torch.ones(batch_size, dtype=torch.bool, device=obs.device)
+            force_switch_mask = torch.zeros(batch_size, dtype=torch.bool, device=obs.device)
+        else:
+            prev_options = option_state.get('prev_options', torch.zeros(batch_size, dtype=torch.long, device=obs.device)).long()
+            option_dwell = option_state.get('option_dwell', torch.zeros(batch_size, dtype=torch.long, device=obs.device)).long()
+            reset_mask = option_state.get('reset_mask', torch.zeros(batch_size, dtype=torch.bool, device=obs.device)).bool()
+            force_switch_mask = option_state.get('force_switch_mask', torch.zeros(batch_size, dtype=torch.bool, device=obs.device)).bool()
+
+        option_logits, termination_logits = self.contact_option_controller(actor_features, obs, prev_options)
+        option_dist = torch.distributions.Categorical(logits=option_logits)
+        termination_dist = torch.distributions.Bernoulli(logits=termination_logits)
+        termination_mask = ~(reset_mask | force_switch_mask)
+        if option_state is not None and 'option_ids' in option_state:
+            option_ids = option_state['option_ids'].long()
+            boundary = option_state.get('option_active', torch.ones(batch_size, device=obs.device)).bool()
+            termination_targets = option_state.get(
+                'termination_target',
+                torch.zeros(batch_size, dtype=torch.float32, device=obs.device),
+            ).float()
+            termination_mask = option_state.get('termination_active', termination_mask.float()).bool()
+        else:
+            sampled_options = option_dist.sample()
+            sampled_termination = termination_dist.sample().bool()
+            boundary = reset_mask | force_switch_mask | (sampled_termination & termination_mask)
+            option_ids = torch.where(boundary, sampled_options, prev_options)
+            termination_targets = (sampled_termination & termination_mask).float()
+        option_neglogp = -option_dist.log_prob(option_ids)
+        termination_neglogp = -termination_dist.log_prob(termination_targets)
+        return option_ids, {
+            'contact_option_ids': option_ids,
+            'contact_prev_option_ids': prev_options,
+            'contact_option_neglogp': option_neglogp,
+            'contact_option_active': boundary.float(),
+            'contact_termination_neglogp': termination_neglogp,
+            'contact_termination_target': termination_targets,
+            'contact_termination_active': termination_mask.float(),
+            'contact_option_dwell': option_dwell.float(),
+            'contact_option_entropy': option_dist.entropy(),
+            'contact_termination_entropy': termination_dist.entropy(),
+            'contact_termination_prob': torch.sigmoid(termination_logits),
+        }
+
+    def _actor_mu(self, actor_features, obs, return_gate_stats=False, option_state=None):
+        if self.contact_options:
+            option_ids, option_result = self._sample_contact_options(actor_features, obs, option_state)
+            return self._option_mu(actor_features, option_ids), option_result
         if not self.contact_event_gating:
             return (self.mu(actor_features), None) if return_gate_stats else self.mu(actor_features)
         if return_gate_stats:
@@ -406,7 +536,13 @@ class ActorCritic(nn.Module):
         mu = torch.sum(expert_mus * gates.unsqueeze(-1), dim=1)
         return (mu, gate_stats) if return_gate_stats else mu
 
-    def _actor_critic(self, obs_dict, return_contact_transition=False, return_contact_gate_stats=False):
+    def _actor_critic(
+        self,
+        obs_dict,
+        return_contact_transition=False,
+        return_contact_gate_stats=False,
+        option_state=None,
+    ):
         obs = obs_dict['obs']
         actor_obs = self.actor_obs_encoder(obs)
         critic_obs = actor_obs
@@ -434,8 +570,11 @@ class ActorCritic(nn.Module):
             actor_features,
             obs,
             return_gate_stats=return_contact_gate_stats,
+            option_state=option_state,
         )
-        if return_contact_gate_stats:
+        if self.contact_options:
+            mu, contact_gate_stats = actor_mu_result
+        elif return_contact_gate_stats:
             mu, contact_gate_stats = actor_mu_result
         else:
             mu, contact_gate_stats = actor_mu_result, None
@@ -449,6 +588,8 @@ class ActorCritic(nn.Module):
             return mu, mu * 0 + sigma, value, extrin, extrin_gt, contact_transition_logits, contact_gate_stats
         if return_contact_transition:
             return mu, mu * 0 + sigma, value, extrin, extrin_gt, contact_transition_logits
+        if self.contact_options:
+            return mu, mu * 0 + sigma, value, extrin, extrin_gt, contact_gate_stats
         return mu, mu * 0 + sigma, value, extrin, extrin_gt
 
     def _encode_privileged(self, obs_dict):
@@ -458,12 +599,13 @@ class ActorCritic(nn.Module):
         shape_embedding = self.pointnet(obs_dict['point_cloud'])
         return torch.cat([phys_embedding, shape_embedding], dim=-1)
 
-    def act_from_extrin(self, obs, extrin):
+    def act_from_extrin(self, obs, extrin, option_state=None):
         actor_obs = self.actor_obs_encoder(obs)
         if self.actor_use_privileged_info:
             actor_obs = torch.cat([actor_obs, extrin], dim=-1)
         x = self.actor_mlp(actor_obs)
-        return self._actor_mu(x, obs)
+        mu_result = self._actor_mu(x, obs, option_state=option_state)
+        return mu_result[0] if self.contact_options else mu_result
 
     def forward(self, input_dict):
         prev_actions = input_dict.get('prev_actions', None)
@@ -471,6 +613,7 @@ class ActorCritic(nn.Module):
             input_dict,
             return_contact_transition=True,
             return_contact_gate_stats=True,
+            option_state=input_dict.get('contact_option_state'),
         )
         mu, logstd, value, extrin, extrin_gt, contact_transition_logits, contact_gate_stats = rst
         sigma = torch.exp(logstd)
@@ -488,6 +631,8 @@ class ActorCritic(nn.Module):
         }
         if contact_transition_logits is not None:
             result['contact_transition_logits'] = contact_transition_logits
-        if contact_gate_stats is not None:
+        if contact_gate_stats is not None and self.contact_options:
+            result['contact_option_stats'] = contact_gate_stats
+        elif contact_gate_stats is not None:
             result['contact_gate_stats'] = contact_gate_stats
         return result

@@ -61,6 +61,15 @@ ppo:
   contact_gate_threshold: 0.05
   contact_gate_balance_coef: 0.0
   contact_gate_switch_coef: 0.0
+  contact_options: False
+  contact_option_max_dwell: 12
+  contact_option_min_dwell: 2
+  contact_option_boundary_mode: soft
+  contact_option_entropy_coef: 0.002
+  contact_termination_entropy_coef: 0.001
+  contact_termination_sparsity_coef: 0.01
+  contact_min_dwell_loss_coef: 0.0
+  contact_option_balance_coef: 0.0
   contact_transition_aux_loss: False
   contact_transition_aux_coef: 0.05
   contact_transition_aux_threshold: 0.05

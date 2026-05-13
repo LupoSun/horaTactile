@@ -416,6 +416,62 @@ def test_actor_critic_supports_contact_event_gated_v2_stats():
     assert torch.allclose(gate_stats["mean_gates"].sum(), torch.ones(()), atol=1e-5)
 
 
+def test_actor_critic_supports_hard_contact_options():
+    model = padapt_module.ActorCritic(
+        {
+            "actor_units": [8, 4],
+            "priv_mlp_units": [4, 8],
+            "actions_num": 2,
+            "input_shape": (132,),
+            "priv_info": True,
+            "proprio_adapt": False,
+            "priv_info_dim": 9,
+            "contact_options": True,
+            "contact_num_modes": 4,
+            "contact_gate_hidden_size": 8,
+            "contact_tactile_dim": 12,
+            "contact_history_len": 3,
+            "contact_gate_event_features": True,
+            "contact_gate_threshold": 0.05,
+        }
+    )
+
+    obs = torch.randn(2, 132)
+    result = model.act(
+        {
+            "obs": obs,
+            "priv_info": torch.randn(2, 9),
+            "contact_option_state": {
+                "prev_options": torch.zeros(2, dtype=torch.long),
+                "option_dwell": torch.zeros(2, dtype=torch.long),
+                "reset_mask": torch.ones(2, dtype=torch.bool),
+                "force_switch_mask": torch.zeros(2, dtype=torch.bool),
+            },
+        }
+    )
+    forward_result = model(
+        {
+            "obs": obs,
+            "priv_info": torch.randn(2, 9),
+            "prev_actions": torch.randn(2, 2),
+            "contact_option_state": {
+                "option_ids": result["contact_option_ids"],
+                "prev_options": result["contact_prev_option_ids"],
+                "option_active": result["contact_option_active"],
+                "termination_target": result["contact_termination_target"],
+                "termination_active": result["contact_termination_active"],
+            },
+        }
+    )
+
+    assert len(model.mu_experts) == 4
+    assert result["actions"].shape == (2, 2)
+    assert result["contact_option_ids"].shape == (2,)
+    assert result["contact_option_active"].shape == (2,)
+    assert forward_result["mus"].shape == (2, 2)
+    assert forward_result["contact_option_stats"]["contact_option_neglogp"].shape == (2,)
+
+
 def test_actor_critic_supports_contact_reset_recurrent_encoder():
     model = padapt_module.ActorCritic(
         {

@@ -62,6 +62,7 @@ class PPO(object):
             'recurrent_obs_seq_len': self.ppo_config.get('recurrent_obs_seq_len', 3),
             'recurrent_hidden_size': self.ppo_config.get('recurrent_hidden_size', 128),
             'contact_reset_recurrent': self.ppo_config.get('contact_reset_recurrent', False),
+            'contact_options': self.ppo_config.get('contact_options', False),
             'contact_event_gating': self.ppo_config.get('contact_event_gating', False),
             'contact_num_modes': self.ppo_config.get('contact_num_modes', 4),
             'contact_gate_hidden_size': self.ppo_config.get('contact_gate_hidden_size', 32),
@@ -105,6 +106,15 @@ class PPO(object):
         self.contact_history_len = self.ppo_config.get('contact_history_len', 3)
         self.contact_gate_balance_coef = self.ppo_config.get('contact_gate_balance_coef', 0.0)
         self.contact_gate_switch_coef = self.ppo_config.get('contact_gate_switch_coef', 0.0)
+        self.contact_options = self.ppo_config.get('contact_options', False)
+        self.contact_option_max_dwell = self.ppo_config.get('contact_option_max_dwell', 12)
+        self.contact_option_boundary_mode = self.ppo_config.get('contact_option_boundary_mode', 'soft')
+        self.contact_option_entropy_coef = self.ppo_config.get('contact_option_entropy_coef', 0.002)
+        self.contact_termination_entropy_coef = self.ppo_config.get('contact_termination_entropy_coef', 0.001)
+        self.contact_termination_sparsity_coef = self.ppo_config.get('contact_termination_sparsity_coef', 0.01)
+        self.contact_min_dwell_loss_coef = self.ppo_config.get('contact_min_dwell_loss_coef', 0.0)
+        self.contact_option_balance_coef = self.ppo_config.get('contact_option_balance_coef', 0.0)
+        self.contact_option_min_dwell = self.ppo_config.get('contact_option_min_dwell', 2)
         # ---- PPO Collect Param ----
         self.horizon_length = self.ppo_config['horizon_length']
         self.batch_size = self.horizon_length * self.num_actors
@@ -130,6 +140,7 @@ class PPO(object):
             self.actions_num, self.priv_info_dim, self.device,
             point_cloud_shape=(self.ppo_config.get('n_pointcloud_pts', 100), 3) if self.use_shape_priv_info else None,
             contact_transition_target_dim=self.contact_tactile_dim if self.contact_transition_aux_loss else None,
+            contact_options=self.contact_options,
         )
 
         batch_size = self.num_actors
@@ -137,6 +148,8 @@ class PPO(object):
         self.current_rewards = torch.zeros(current_rewards_shape, dtype=torch.float32, device=self.device)
         self.current_lengths = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
         self.dones = torch.ones((batch_size,), dtype=torch.uint8, device=self.device)
+        self.contact_current_options = torch.zeros(batch_size, dtype=torch.long, device=self.device)
+        self.contact_option_dwell = torch.zeros(batch_size, dtype=torch.long, device=self.device)
         self.agent_steps = 0
         self.max_agent_steps = self.ppo_config['max_agent_steps']
         self.best_rewards = -10000
@@ -185,9 +198,33 @@ class PPO(object):
         }
         if self.use_shape_priv_info:
             input_dict['point_cloud'] = obs_dict['point_cloud']
+        if self.contact_options:
+            force_switch = self.contact_option_dwell >= self.contact_option_max_dwell
+            if self.contact_option_boundary_mode == 'forced':
+                contact_event = self.contact_transition_target(obs_dict['obs']).any(dim=-1)
+                force_switch = torch.logical_or(force_switch, contact_event)
+            input_dict['contact_option_state'] = {
+                'prev_options': self.contact_current_options,
+                'option_dwell': self.contact_option_dwell,
+                'reset_mask': self.dones.bool(),
+                'force_switch_mask': force_switch,
+            }
         res_dict = self.model.act(input_dict)
         res_dict['values'] = self.value_mean_std(res_dict['values'], True)
         return res_dict
+
+    def update_contact_option_state(self, res_dict):
+        if not self.contact_options:
+            return
+        option_ids = res_dict['contact_option_ids'].detach().long()
+        boundary = res_dict['contact_option_active'].detach().bool()
+        next_dwell = torch.where(
+            boundary,
+            torch.zeros_like(self.contact_option_dwell),
+            self.contact_option_dwell + 1,
+        )
+        self.contact_current_options = option_ids
+        self.contact_option_dwell = next_dwell
 
     def contact_transition_target(self, obs):
         tactile_history_dim = self.contact_history_len * self.contact_tactile_dim
@@ -277,9 +314,24 @@ class PPO(object):
                 'obs': self.running_mean_std(obs_dict['obs']),
                 'priv_info': obs_dict['priv_info'],
             }
+            if self.use_shape_priv_info:
+                input_dict['point_cloud'] = obs_dict['point_cloud']
+            if self.contact_options:
+                force_switch = self.contact_option_dwell >= self.contact_option_max_dwell
+                if self.contact_option_boundary_mode == 'forced':
+                    contact_event = self.contact_transition_target(obs_dict['obs']).any(dim=-1)
+                    force_switch = torch.logical_or(force_switch, contact_event)
+                input_dict['contact_option_state'] = {
+                    'prev_options': self.contact_current_options,
+                    'option_dwell': self.contact_option_dwell,
+                    'reset_mask': self.dones.bool(),
+                    'force_switch_mask': force_switch,
+                }
             mu = self.model.act_inference(input_dict)
+            if self.contact_options:
+                self.update_contact_option_state(input_dict.get('contact_option_result'))
             mu = torch.clamp(mu, -1.0, 1.0)
-            obs_dict, r, done, info = self.env.step(mu)
+            obs_dict, r, self.dones, info = self.env.step(mu)
 
     def train_epoch(self):
         # collect minibatch data
@@ -294,6 +346,8 @@ class PPO(object):
         entropies, kls = [], []
         gate_usage_stats = []
         gate_scalar_stats = {}
+        option_usage_stats = []
+        option_scalar_stats = {}
         for _ in range(0, self.mini_epochs_num):
             ep_kls = []
             for i in range(len(self.storage)):
@@ -309,6 +363,13 @@ class PPO(object):
                     if self.contact_transition_aux_loss and len(batch) > batch_idx
                     else None
                 )
+                if self.contact_transition_aux_loss and contact_transition_target is not None:
+                    batch_idx += 1
+                contact_option_state = (
+                    batch[batch_idx]
+                    if self.contact_options and len(batch) > batch_idx
+                    else None
+                )
 
                 obs = self.running_mean_std(obs)
                 batch_dict = {
@@ -318,6 +379,8 @@ class PPO(object):
                 }
                 if point_cloud is not None:
                     batch_dict['point_cloud'] = point_cloud
+                if contact_option_state is not None:
+                    batch_dict['contact_option_state'] = contact_option_state
                 res_dict = self.model(batch_dict)
                 action_log_probs = res_dict['prev_neglogp']
                 values = res_dict['values']
@@ -325,6 +388,7 @@ class PPO(object):
                 mu = res_dict['mus']
                 sigma = res_dict['sigmas']
                 contact_gate_stats = res_dict.get('contact_gate_stats')
+                contact_option_stats = res_dict.get('contact_option_stats')
 
                 # actor loss
                 ratio = torch.exp(old_action_log_probs - action_log_probs)
@@ -374,6 +438,75 @@ class PPO(object):
                     )
                     loss = loss + self.contact_transition_aux_coef * aux_loss
                     aux_losses.append(aux_loss)
+                if self.contact_options and contact_option_state is not None and contact_option_stats is not None:
+                    option_active = contact_option_state['option_active']
+                    termination_active = contact_option_state['termination_active']
+                    option_ratio = torch.exp(
+                        contact_option_state['old_option_neglogp'] - contact_option_stats['contact_option_neglogp']
+                    )
+                    option_surr1 = advantage * option_ratio
+                    option_surr2 = advantage * torch.clamp(option_ratio, 1.0 - self.e_clip, 1.0 + self.e_clip)
+                    option_loss_terms = torch.max(-option_surr1, -option_surr2) * option_active
+                    option_loss = option_loss_terms.sum() / option_active.sum().clamp_min(1.0)
+
+                    term_ratio = torch.exp(
+                        contact_option_state['old_termination_neglogp']
+                        - contact_option_stats['contact_termination_neglogp']
+                    )
+                    term_surr1 = advantage * term_ratio
+                    term_surr2 = advantage * torch.clamp(term_ratio, 1.0 - self.e_clip, 1.0 + self.e_clip)
+                    termination_loss_terms = torch.max(-term_surr1, -term_surr2) * termination_active
+                    termination_loss = termination_loss_terms.sum() / termination_active.sum().clamp_min(1.0)
+
+                    option_entropy = (
+                        contact_option_stats['contact_option_entropy'] * option_active
+                    ).sum() / option_active.sum().clamp_min(1.0)
+                    termination_entropy = (
+                        contact_option_stats['contact_termination_entropy'] * termination_active
+                    ).sum() / termination_active.sum().clamp_min(1.0)
+                    termination_sparsity = (
+                        contact_option_stats['contact_termination_prob'] * termination_active
+                    ).sum() / termination_active.sum().clamp_min(1.0)
+                    num_modes = self.ppo_config.get('contact_num_modes', 4)
+                    option_usage = F.one_hot(
+                        contact_option_state['option_ids'].long(),
+                        num_modes,
+                    ).float().mean(dim=0)
+                    uniform_usage = torch.full_like(option_usage, 1.0 / num_modes)
+                    option_balance_loss = torch.sum((option_usage - uniform_usage) ** 2)
+                    early_termination = F.relu(
+                        float(self.contact_option_min_dwell) - contact_option_state['option_dwell']
+                    )
+                    min_dwell_loss = (
+                        early_termination
+                        * contact_option_state['termination_target']
+                        * termination_active
+                    ).sum() / termination_active.sum().clamp_min(1.0)
+
+                    loss = (
+                        loss
+                        + option_loss
+                        + termination_loss
+                        - self.contact_option_entropy_coef * option_entropy
+                        - self.contact_termination_entropy_coef * termination_entropy
+                        + self.contact_termination_sparsity_coef * termination_sparsity
+                        + self.contact_min_dwell_loss_coef * min_dwell_loss
+                        + self.contact_option_balance_coef * option_balance_loss
+                    )
+                    with torch.no_grad():
+                        option_usage_stats.append(option_usage.detach())
+                        option_scalar_stats.setdefault('option_policy_loss', []).append(option_loss.detach())
+                        option_scalar_stats.setdefault('termination_loss', []).append(termination_loss.detach())
+                        option_scalar_stats.setdefault('option_entropy', []).append(option_entropy.detach())
+                        option_scalar_stats.setdefault('termination_entropy', []).append(termination_entropy.detach())
+                        option_scalar_stats.setdefault('termination_sparsity_loss', []).append(termination_sparsity.detach())
+                        option_scalar_stats.setdefault('min_dwell_loss', []).append(min_dwell_loss.detach())
+                        option_scalar_stats.setdefault('option_balance_loss', []).append(option_balance_loss.detach())
+                        option_scalar_stats.setdefault('mean_dwell', []).append(contact_option_state['option_dwell'].float().mean().detach())
+                        option_scalar_stats.setdefault('termination_rate', []).append(
+                            contact_option_state['termination_target'].float().mean().detach()
+                        )
+                        option_scalar_stats.setdefault('boundary_rate', []).append(option_active.float().mean().detach())
 
                 self.optimizer.zero_grad()
                 loss.backward()
@@ -413,6 +546,20 @@ class PPO(object):
                     gate_log_stats[f'losses/contact_gate_{key}'] = value
             self.extra_info.update(gate_log_stats)
 
+        if option_usage_stats:
+            mean_usage = torch.stack(option_usage_stats).mean(dim=0)
+            option_log_stats = {
+                f'contact_options/option_{idx}_usage': mean_usage[idx].item()
+                for idx in range(mean_usage.shape[0])
+            }
+            for key, values in option_scalar_stats.items():
+                value = torch.mean(torch.stack(values)).item()
+                if key.endswith('_loss'):
+                    option_log_stats[f'losses/contact_{key}'] = value
+                else:
+                    option_log_stats[f'contact_options/{key}'] = value
+            self.extra_info.update(option_log_stats)
+
         self.rl_train_time += (time.time() - _t)
         return a_losses, c_losses, b_losses, entropies, kls, aux_losses
 
@@ -426,6 +573,19 @@ class PPO(object):
                 self.storage.update_data('point_clouds', n, self.obs['point_cloud'])
             for k in ['actions', 'neglogpacs', 'values', 'mus', 'sigmas']:
                 self.storage.update_data(k, n, res_dict[k])
+            if self.contact_options:
+                for k in [
+                    'contact_option_ids',
+                    'contact_prev_option_ids',
+                    'contact_option_neglogp',
+                    'contact_option_active',
+                    'contact_termination_neglogp',
+                    'contact_termination_target',
+                    'contact_termination_active',
+                    'contact_option_dwell',
+                ]:
+                    self.storage.update_data(k, n, res_dict[k])
+                self.update_contact_option_state(res_dict)
             # do env step
             actions = torch.clamp(res_dict['actions'], -1.0, 1.0)
             self.obs, rewards, self.dones, infos = self.env.step(actions)

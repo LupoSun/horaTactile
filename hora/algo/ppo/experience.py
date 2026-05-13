@@ -10,7 +10,6 @@
 # https://github.com/Denys88/rl_games/
 # --------------------------------------------------------
 
-import gym
 import torch
 from torch.utils.data import Dataset
 
@@ -38,6 +37,7 @@ class ExperienceBuffer(Dataset):
         device,
         point_cloud_shape=None,
         contact_transition_target_dim=None,
+        contact_options=False,
     ):
         self.device = device
         self.num_envs = num_envs
@@ -72,6 +72,31 @@ class ExperienceBuffer(Dataset):
                 dtype=torch.float32,
                 device=self.device,
             )
+        if contact_options:
+            self.storage_dict['contact_option_ids'] = torch.zeros(
+                (self.transitions_per_env, self.num_envs), dtype=torch.long, device=self.device,
+            )
+            self.storage_dict['contact_prev_option_ids'] = torch.zeros(
+                (self.transitions_per_env, self.num_envs), dtype=torch.long, device=self.device,
+            )
+            self.storage_dict['contact_option_neglogp'] = torch.zeros(
+                (self.transitions_per_env, self.num_envs), dtype=torch.float32, device=self.device,
+            )
+            self.storage_dict['contact_option_active'] = torch.zeros(
+                (self.transitions_per_env, self.num_envs), dtype=torch.float32, device=self.device,
+            )
+            self.storage_dict['contact_termination_neglogp'] = torch.zeros(
+                (self.transitions_per_env, self.num_envs), dtype=torch.float32, device=self.device,
+            )
+            self.storage_dict['contact_termination_target'] = torch.zeros(
+                (self.transitions_per_env, self.num_envs), dtype=torch.float32, device=self.device,
+            )
+            self.storage_dict['contact_termination_active'] = torch.zeros(
+                (self.transitions_per_env, self.num_envs), dtype=torch.float32, device=self.device,
+            )
+            self.storage_dict['contact_option_dwell'] = torch.zeros(
+                (self.transitions_per_env, self.num_envs), dtype=torch.float32, device=self.device,
+            )
 
         self.batch_size = batch_size
         self.minibatch_size = minibatch_size
@@ -100,6 +125,19 @@ class ExperienceBuffer(Dataset):
             result.append(input_dict['point_clouds'])
         if 'contact_transition_targets' in input_dict:
             result.append(input_dict['contact_transition_targets'])
+        if 'contact_option_ids' in input_dict:
+            result.append(
+                {
+                    'option_ids': input_dict['contact_option_ids'],
+                    'prev_options': input_dict['contact_prev_option_ids'],
+                    'old_option_neglogp': input_dict['contact_option_neglogp'],
+                    'option_active': input_dict['contact_option_active'],
+                    'old_termination_neglogp': input_dict['contact_termination_neglogp'],
+                    'termination_target': input_dict['contact_termination_target'],
+                    'termination_active': input_dict['contact_termination_active'],
+                    'option_dwell': input_dict['contact_option_dwell'],
+                }
+            )
         return tuple(result)
 
     def update_mu_sigma(self, mu, sigma):
